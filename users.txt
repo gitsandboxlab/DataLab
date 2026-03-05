@@ -1,0 +1,53 @@
+1. The Initial Call: Get All Users
+
+Place this at the very top of your workflow.
+
+Method: GET
+
+URI: https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName
+
+Authentication: Managed Identity
+
+Audience: https://graph.microsoft.com
+
+2. Inside the "For Each" Loop: The Triple Call
+
+For every user found in Step 1, you will run these three requests.
+
+A. Entra ID Directory Roles
+
+This identifies if the user is a Global Admin, Security Reader, etc.
+
+Method: GET
+
+URI: https://graph.microsoft.com/v1.0/users/@{items('For_each')?['id']}/memberOf
+
+Authentication: Managed Identity
+
+Audience: https://graph.microsoft.com
+
+Note: This returns all groups and roles. You will want to filter the results where @odata.type equals #microsoft.graph.directoryRole.
+
+B. Enterprise Application Assignments
+
+This shows which SaaS apps (like Salesforce or AWS) the user is assigned to.
+
+Method: GET
+
+URI: https://graph.microsoft.com/v1.0/users/@{items('For_each')?['id']}/appRoleAssignments
+
+Authentication: Managed Identity
+
+Audience: https://graph.microsoft.com
+
+C. Azure RBAC Roles (Infrastructure)
+
+This shows if they are a "Contributor" or "Owner" on subscriptions or resource groups.
+
+Method: GET
+
+URI: https://management.azure.com/providers/Microsoft.Authorization/roleAssignments?$filter=principalId eq '@{items('For_each')?['id']}'&api-version=2022-04-01
+
+Authentication: Managed Identity
+
+Audience: https://management.azure.com (Notice the audience change!)
