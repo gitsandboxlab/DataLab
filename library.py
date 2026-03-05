@@ -1,30 +1,28 @@
 
 # 
-
-# 1. Connect to Microsoft Graph
-# You need 'AppRoleAssignment.ReadWrite.All' to grant permissions to others
+# 1. Connect as a Global Admin
 Connect-MgGraph -Scopes "AppRoleAssignment.ReadWrite.All", "Application.Read.All"
 
-# 2. Paste your Logic App's Object ID here
-$managedIdentityObjectId = "YOUR_LOGIC_APP_OBJECT_ID_HERE"
+# 2. Paste your User-Assigned Identity's PRINCIPAL ID here
+$userManagedIdentityId = "YOUR_USER_ASSIGNED_PRINCIPAL_ID"
 
-# 3. This is the constant ID for the Microsoft Graph API itself
+# 3. Get the Microsoft Graph Service Principal
 $graphAppId = "00000003-0000-0000-c000-000000000000"
 $graphServicePrincipal = Get-MgServicePrincipal -Filter "AppId eq '$graphAppId'"
 
-# 4. Find the specific 'Application.Read.All' permission ID
+# 4. Find the 'Application.Read.All' role ID
 $appReadRole = $graphServicePrincipal.AppRoles | Where-Object {$_.Value -eq "Application.Read.All"}
 
-# 5. Assign the role to your Logic App
+# 5. Assign the permission
 $params = @{
-    "PrincipalId" = $managedIdentityObjectId
+    "PrincipalId" = $userManagedIdentityId
     "ResourceId"  = $graphServicePrincipal.Id
     "AppRoleId"   = $appReadRole.Id
 }
 
-New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $managedIdentityObjectId @params
+New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $userManagedIdentityId @params
 
-Write-Host "Success! Permission Application.Read.All has been granted." -ForegroundColor Green
+Write-Host "Success! Your User-Assigned Identity can now read all App Secrets." -ForegroundColor Green
 
 
 
