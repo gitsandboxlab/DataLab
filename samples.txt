@@ -1,0 +1,8 @@
+#HTTP GET DEVICE REQUESTS
+https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$select=id,deviceName,userPrincipalName,userDisplayName,lastSyncDateTime,complianceState,operatingSystem,osVersion,serialNumber,model,manufacturer,enrolledDateTime,totalStorageSpaceInBytes,freeStorageSpaceInBytes,easDeviceId
+
+#Compliance list
+https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/deviceCompliancePolicyStates
+
+#Device User List
+GET https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
