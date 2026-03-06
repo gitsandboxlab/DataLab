@@ -6,3 +6,67 @@ https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceI
 
 #Device User List
 GET https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
+
+## Device Bulk Insert
+CREATE TABLE [dbo].[ManagedDevices_Inventory] (
+    [id] [nvarchar](100) PRIMARY KEY,
+    [deviceName] [nvarchar](255),
+    [userPrincipalName] [nvarchar](255),
+    [userDisplayName] [nvarchar](255),
+    [lastSyncDateTime] [datetimeoffset](7),
+    [complianceState] [nvarchar](50),
+    [operatingSystem] [nvarchar](100),
+    [osVersion] [nvarchar](100),
+    [serialNumber] [nvarchar](100),
+    [model] [nvarchar](100),
+    [manufacturer] [nvarchar](100),
+    [enrolledDateTime] [datetimeoffset](7),
+    [totalStorageSpaceInBytes] [bigint],
+    [freeStorageSpaceInBytes] [bigint],
+    [easDeviceId] [nvarchar](100),
+    [LastUpdated] [datetime] DEFAULT GETDATE()
+);
+
+CREATE PROCEDURE [dbo].[sp_BulkLoadManagedDevices_Fresh]
+    @DeviceJson NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 1. Wipe the table
+    TRUNCATE TABLE [dbo].[ManagedDevices_Inventory];
+
+    -- 2. Bulk Insert from JSON
+    INSERT INTO [dbo].[ManagedDevices_Inventory] (
+        id, deviceName, userPrincipalName, userDisplayName, 
+        lastSyncDateTime, complianceState, operatingSystem, 
+        osVersion, serialNumber, model, manufacturer, 
+        enrolledDateTime, totalStorageSpaceInBytes, 
+        freeStorageSpaceInBytes, easDeviceId
+    )
+    SELECT 
+        id, deviceName, userPrincipalName, userDisplayName, 
+        lastSyncDateTime, complianceState, operatingSystem, 
+        osVersion, serialNumber, model, manufacturer, 
+        enrolledDateTime, totalStorageSpaceInBytes, 
+        freeStorageSpaceInBytes, easDeviceId
+    FROM OPENJSON(@DeviceJson)
+    WITH (
+        id nvarchar(100),
+        deviceName nvarchar(255),
+        userPrincipalName nvarchar(255),
+        userDisplayName nvarchar(255),
+        lastSyncDateTime datetimeoffset(7),
+        complianceState nvarchar(50),
+        operatingSystem nvarchar(100),
+        osVersion nvarchar(100),
+        serialNumber nvarchar(100),
+        model nvarchar(100),
+        manufacturer nvarchar(100),
+        enrolledDateTime datetimeoffset(7),
+        totalStorageSpaceInBytes bigint,
+        freeStorageSpaceInBytes bigint,
+        easDeviceId nvarchar(100)
+    );
+END
+
