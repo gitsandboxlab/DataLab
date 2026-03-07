@@ -4,6 +4,9 @@ https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$select=id,devi
 #Compliance list
 https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/deviceCompliancePolicyStates
 
+#Compliance per Item
+#https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('{id}')/deviceComplianceSettingStates
+
 #Device User List
 GET https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
 
