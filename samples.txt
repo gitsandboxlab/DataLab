@@ -6,9 +6,11 @@ https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceI
 
 #Compliance per Item
 #https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('{id}')/deviceComplianceSettingStates
+https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('@{items('For_each')?['id']}')/deviceComplianceSettingStates?$filter=complianceStatus eq 'nonCompliant'
 
 #Device User List
-GET https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
+https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
+
 
 ## Device Bulk Insert
 CREATE TABLE [dbo].[ManagedDevices_Inventory] (
