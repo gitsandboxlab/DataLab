@@ -1,3 +1,6 @@
+#Date Converion
+concat('Report_', convertFromUtc(utcNow(), 'Pacific Standard Time', 'yyyy-MM-dd_HH-mm'), '.csv')
+
 #HTTP GET DEVICE REQUESTS
 https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$select=id,deviceName,userPrincipalName,userDisplayName,lastSyncDateTime,complianceState,operatingSystem,osVersion,serialNumber,model,manufacturer,enrolledDateTime,totalStorageSpaceInBytes,freeStorageSpaceInBytes,easDeviceId
 
