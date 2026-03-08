@@ -10,36 +10,37 @@ CREATE TABLE M365Users (
     LicensesJSON NVARCHAR(MAX)        -- Full JSON array
 );
 
-CREATE PROCEDURE sp_BulkUpsertM365Users
+CREATE PROCEDURE sp_BulkLoadM365Users
     @jsonInput NVARCHAR(MAX)
 AS
 BEGIN
     SET NOCOUNT ON;
-    MERGE INTO M365Users AS Target
-    USING (
-        SELECT * FROM OPENJSON(@jsonInput)
-        WITH (
-            UserID UNIQUEIDENTIFIER,
-            DisplayName NVARCHAR(255),
-            UPN NVARCHAR(255),
-            IsActive BIT,
-            CreatedDate DATETIME2,
-            SignInActivityJSON NVARCHAR(MAX) AS JSON, -- Captures the nested object
-            LicensesJSON NVARCHAR(MAX) AS JSON       -- Captures the nested array
-        )
-    ) AS Source
-    ON Target.UserID = Source.UserID
-    WHEN MATCHED THEN
-        UPDATE SET 
-            Target.DisplayName = Source.DisplayName,
-            Target.UPN = Source.UPN,
-            Target.IsActive = Source.IsActive,
-            Target.SignInActivityJSON = Source.SignInActivityJSON,
-            Target.LicensesJSON = Source.LicensesJSON
-    WHEN NOT MATCHED THEN
-        INSERT (UserID, DisplayName, UPN, IsActive, CreatedDate, SignInActivityJSON, LicensesJSON)
-        VALUES (Source.UserID, Source.DisplayName, Source.UPN, Source.IsActive, Source.CreatedDate, Source.SignInActivityJSON, Source.LicensesJSON);
+
+    -- Wipe the existing data
+    TRUNCATE TABLE M365Users;
+
+    -- Insert the new batch
+    INSERT INTO M365Users (UserID, DisplayName, UPN, IsActive, CreatedDate, SignInActivityJSON, LicensesJSON)
+    SELECT 
+        UserID, 
+        DisplayName, 
+        UPN, 
+        IsActive, 
+        CreatedDate, 
+        SignInActivityJSON, 
+        LicensesJSON
+    FROM OPENJSON(@jsonInput)
+    WITH (
+        UserID UNIQUEIDENTIFIER,
+        DisplayName NVARCHAR(255),
+        UPN NVARCHAR(255),
+        IsActive BIT,
+        CreatedDate DATETIME2,
+        SignInActivityJSON NVARCHAR(MAX) AS JSON,
+        LicensesJSON NVARCHAR(MAX) AS JSON
+    );
 END
+
 
 #USERS
 Method: GET
