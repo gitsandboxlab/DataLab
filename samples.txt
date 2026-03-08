@@ -1,3 +1,46 @@
+
+
+CREATE TABLE M365Users (
+    UserID UNIQUEIDENTIFIER PRIMARY KEY,
+    DisplayName NVARCHAR(255),
+    UPN NVARCHAR(255),
+    IsActive BIT,
+    CreatedDate DATETIME2,
+    SignInActivityJSON NVARCHAR(MAX), -- Full JSON object
+    LicensesJSON NVARCHAR(MAX)        -- Full JSON array
+);
+
+CREATE PROCEDURE sp_BulkUpsertM365Users
+    @jsonInput NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    MERGE INTO M365Users AS Target
+    USING (
+        SELECT * FROM OPENJSON(@jsonInput)
+        WITH (
+            UserID UNIQUEIDENTIFIER,
+            DisplayName NVARCHAR(255),
+            UPN NVARCHAR(255),
+            IsActive BIT,
+            CreatedDate DATETIME2,
+            SignInActivityJSON NVARCHAR(MAX) AS JSON, -- Captures the nested object
+            LicensesJSON NVARCHAR(MAX) AS JSON       -- Captures the nested array
+        )
+    ) AS Source
+    ON Target.UserID = Source.UserID
+    WHEN MATCHED THEN
+        UPDATE SET 
+            Target.DisplayName = Source.DisplayName,
+            Target.UPN = Source.UPN,
+            Target.IsActive = Source.IsActive,
+            Target.SignInActivityJSON = Source.SignInActivityJSON,
+            Target.LicensesJSON = Source.LicensesJSON
+    WHEN NOT MATCHED THEN
+        INSERT (UserID, DisplayName, UPN, IsActive, CreatedDate, SignInActivityJSON, LicensesJSON)
+        VALUES (Source.UserID, Source.DisplayName, Source.UPN, Source.IsActive, Source.CreatedDate, Source.SignInActivityJSON, Source.LicensesJSON);
+END
+
 #USERS
 Method: GET
 URI: https://graph.microsoft.com/v1.0/users?$select=displayName,userPrincipalName,id,signInActivity,assignedLicenses,accountEnabled,createdDateTime&$top=999
