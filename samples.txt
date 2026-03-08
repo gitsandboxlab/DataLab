@@ -1,3 +1,10 @@
+#USERS
+Method: GET
+URI: https://graph.microsoft.com/v1.0/users?$select=displayName,userPrincipalName,id,signInActivity,assignedLicenses,accountEnabled,createdDateTime&$top=999
+Headers:
+ConsistencyLevel: eventual (Required for advanced queries like signInActivity).
+
+
 #Date Converion
 concat('Report_', convertFromUtc(utcNow(), 'Pacific Standard Time', 'yyyy-MM-dd_HH-mm'), '.csv')
 
