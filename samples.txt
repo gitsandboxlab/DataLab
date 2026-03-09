@@ -1,153 +1,16 @@
-
-#SKU
-CREATE VIEW vw_M365UserReport AS
 SELECT 
     u.UserID,
     u.DisplayName,
-    u.UPN,
-    u.IsActive,
-    u.CreatedDate,
-    -- Extract the Last Sign-In Date
-    CAST(JSON_VALUE(u.SignInActivityJSON, '$.lastSignInDateTime') AS DATETIME2) AS LastSignInDate,
-    
-    -- Subquery with DISTINCT to prevent duplicates
     (
-        SELECT STRING_AGG(CAST(m.Product_Display_Name AS NVARCHAR(MAX)), ', ')
+        SELECT STRING_AGG(m.Product_Display_Name, ', ')
         FROM (
             SELECT DISTINCT m.Product_Display_Name
-            FROM OPENJSON(u.LicensesJSON) WITH (skuId UNIQUEIDENTIFIER) AS json_licenses
-            LEFT JOIN LicenseMap m ON json_licenses.skuId = m.GUID
+            FROM OPENJSON(u.LicensesJSON) 
+            WITH (
+                skuId UNIQUEIDENTIFIER '$.skuId' -- This extracts the ID from each object
+            ) AS j
+            INNER JOIN LicenseMap m ON j.skuId = m.GUID -- Joins to your CSV lookup table
             WHERE m.Product_Display_Name IS NOT NULL
-        ) AS m
+        ) AS UniqueLicenses
     ) AS FriendlyLicenseNames
 FROM M365Users u;
-
-CREATE TABLE M365Users (
-    UserID UNIQUEIDENTIFIER PRIMARY KEY,
-    DisplayName NVARCHAR(255),
-    UPN NVARCHAR(255),
-    IsActive BIT,
-    CreatedDate DATETIME2,
-    SignInActivityJSON NVARCHAR(MAX), -- Full JSON object
-    LicensesJSON NVARCHAR(MAX)        -- Full JSON array
-);
-
-CREATE PROCEDURE sp_BulkLoadM365Users
-    @jsonInput NVARCHAR(MAX)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Wipe the existing data
-    TRUNCATE TABLE M365Users;
-
-    -- Insert the new batch
-    INSERT INTO M365Users (UserID, DisplayName, UPN, IsActive, CreatedDate, SignInActivityJSON, LicensesJSON)
-    SELECT 
-        UserID, 
-        DisplayName, 
-        UPN, 
-        IsActive, 
-        CreatedDate, 
-        SignInActivityJSON, 
-        LicensesJSON
-    FROM OPENJSON(@jsonInput)
-    WITH (
-        UserID UNIQUEIDENTIFIER,
-        DisplayName NVARCHAR(255),
-        UPN NVARCHAR(255),
-        IsActive BIT,
-        CreatedDate DATETIME2,
-        SignInActivityJSON NVARCHAR(MAX) AS JSON,
-        LicensesJSON NVARCHAR(MAX) AS JSON
-    );
-END
-
-
-#USERS
-Method: GET
-URI: https://graph.microsoft.com/v1.0/users?$select=displayName,userPrincipalName,id,signInActivity,assignedLicenses,accountEnabled,createdDateTime&$top=999
-Headers:
-ConsistencyLevel: eventual (Required for advanced queries like signInActivity).
-
-
-#Date Converion
-concat('Report_', convertFromUtc(utcNow(), 'Pacific Standard Time', 'yyyy-MM-dd_HH-mm'), '.csv')
-
-#HTTP GET DEVICE REQUESTS
-https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$select=id,deviceName,userPrincipalName,userDisplayName,lastSyncDateTime,complianceState,operatingSystem,osVersion,serialNumber,model,manufacturer,enrolledDateTime,totalStorageSpaceInBytes,freeStorageSpaceInBytes,easDeviceId
-
-#Compliance list
-https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/deviceCompliancePolicyStates
-
-#Compliance per Item
-#https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('{id}')/deviceComplianceSettingStates
-https://graph.microsoft.com/v1.0/deviceManagement/managedDevices('@{items('For_each')?['id']}')/deviceComplianceSettingStates?$filter=complianceStatus eq 'nonCompliant'
-
-#Device User List
-https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/{managedDeviceId}/users
-
-
-## Device Bulk Insert
-CREATE TABLE [dbo].[ManagedDevices_Inventory] (
-    [id] [nvarchar](100) PRIMARY KEY,
-    [deviceName] [nvarchar](255),
-    [userPrincipalName] [nvarchar](255),
-    [userDisplayName] [nvarchar](255),
-    [lastSyncDateTime] [datetimeoffset](7),
-    [complianceState] [nvarchar](50),
-    [operatingSystem] [nvarchar](100),
-    [osVersion] [nvarchar](100),
-    [serialNumber] [nvarchar](100),
-    [model] [nvarchar](100),
-    [manufacturer] [nvarchar](100),
-    [enrolledDateTime] [datetimeoffset](7),
-    [totalStorageSpaceInBytes] [bigint],
-    [freeStorageSpaceInBytes] [bigint],
-    [easDeviceId] [nvarchar](100),
-    [LastUpdated] [datetime] DEFAULT GETDATE()
-);
-
-CREATE PROCEDURE [dbo].[sp_BulkLoadManagedDevices_Fresh]
-    @DeviceJson NVARCHAR(MAX)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- 1. Wipe the table
-    TRUNCATE TABLE [dbo].[ManagedDevices_Inventory];
-
-    -- 2. Bulk Insert from JSON
-    INSERT INTO [dbo].[ManagedDevices_Inventory] (
-        id, deviceName, userPrincipalName, userDisplayName, 
-        lastSyncDateTime, complianceState, operatingSystem, 
-        osVersion, serialNumber, model, manufacturer, 
-        enrolledDateTime, totalStorageSpaceInBytes, 
-        freeStorageSpaceInBytes, easDeviceId
-    )
-    SELECT 
-        id, deviceName, userPrincipalName, userDisplayName, 
-        lastSyncDateTime, complianceState, operatingSystem, 
-        osVersion, serialNumber, model, manufacturer, 
-        enrolledDateTime, totalStorageSpaceInBytes, 
-        freeStorageSpaceInBytes, easDeviceId
-    FROM OPENJSON(@DeviceJson)
-    WITH (
-        id nvarchar(100),
-        deviceName nvarchar(255),
-        userPrincipalName nvarchar(255),
-        userDisplayName nvarchar(255),
-        lastSyncDateTime datetimeoffset(7),
-        complianceState nvarchar(50),
-        operatingSystem nvarchar(100),
-        osVersion nvarchar(100),
-        serialNumber nvarchar(100),
-        model nvarchar(100),
-        manufacturer nvarchar(100),
-        enrolledDateTime datetimeoffset(7),
-        totalStorageSpaceInBytes bigint,
-        freeStorageSpaceInBytes bigint,
-        easDeviceId nvarchar(100)
-    );
-END
-
