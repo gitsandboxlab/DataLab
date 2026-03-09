@@ -1,16 +1,34 @@
+WITH UserLicensesExpanded AS (
+    -- Step 1: Shred the JSON and join to the Map
+    SELECT 
+        u.UserID,
+        m.Product_Display_Name
+    FROM M365Users u
+    CROSS APPLY OPENJSON(u.LicensesJSON) 
+    WITH (
+        skuId UNIQUEIDENTIFIER '$.skuId'
+    ) AS j
+    LEFT JOIN LicenseMap m ON j.skuId = m.GUID
+),
+UniqueUserLicenses AS (
+    -- Step 2: Get unique names per user
+    SELECT DISTINCT 
+        UserID, 
+        COALESCE(Product_Display_Name, 'Unknown License') AS LicenseName
+    FROM UserLicensesExpanded
+)
+-- Step 3: Final Report
 SELECT 
     u.UserID,
     u.DisplayName,
     u.UPN,
-    -- The Subquery starts here
-    (
-        SELECT STRING_AGG(CAST(m.Product_Display_Name AS NVARCHAR(MAX)), ', ')
-        FROM (
-            SELECT DISTINCT m.Product_Display_Name
-            FROM OPENJSON(u.LicensesJSON) 
-            WITH (skuId UNIQUEIDENTIFIER '$.skuId') AS j
-            LEFT JOIN LicenseMap m ON j.skuId = m.GUID
-            WHERE m.Product_Display_Name IS NOT NULL
-        ) AS m -- This 'm' is local to this subquery only
-    ) AS FriendlyLicenseNames -- This is the alias for the whole result
-FROM M365Users u;
+    CAST(JSON_VALUE(u.SignInActivityJSON, '$.lastSignInDateTime') AS DATETIME2) AS LastSignInDate,
+    l.FriendlyLicenses
+FROM M365Users u
+LEFT JOIN (
+    SELECT 
+        UserID, 
+        STRING_AGG(LicenseName, ', ') AS FriendlyLicenses
+    FROM UniqueUserLicenses
+    GROUP BY UserID
+) l ON u.UserID = l.UserID;
