@@ -1,16 +1,16 @@
 SELECT 
     u.UserID,
     u.DisplayName,
+    u.UPN,
+    -- The Subquery starts here
     (
-        SELECT STRING_AGG(m.Product_Display_Name, ', ')
+        SELECT STRING_AGG(CAST(m.Product_Display_Name AS NVARCHAR(MAX)), ', ')
         FROM (
             SELECT DISTINCT m.Product_Display_Name
             FROM OPENJSON(u.LicensesJSON) 
-            WITH (
-                skuId UNIQUEIDENTIFIER '$.skuId' -- This extracts the ID from each object
-            ) AS j
-            INNER JOIN LicenseMap m ON j.skuId = m.GUID -- Joins to your CSV lookup table
+            WITH (skuId UNIQUEIDENTIFIER '$.skuId') AS j
+            LEFT JOIN LicenseMap m ON j.skuId = m.GUID
             WHERE m.Product_Display_Name IS NOT NULL
-        ) AS UniqueLicenses
-    ) AS FriendlyLicenseNames
+        ) AS m -- This 'm' is local to this subquery only
+    ) AS FriendlyLicenseNames -- This is the alias for the whole result
 FROM M365Users u;
