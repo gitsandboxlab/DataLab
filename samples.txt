@@ -1,4 +1,23 @@
 
+#SKU
+CREATE VIEW vw_M365UserReport AS
+SELECT 
+    u.UserID,
+    u.DisplayName,
+    u.UPN,
+    u.IsActive,
+    u.CreatedDate,
+    -- Extract the Last Sign-In Date from JSON
+    CAST(JSON_VALUE(u.SignInActivityJSON, '$.lastSignInDateTime') AS DATETIME2) AS LastSignInDate,
+    
+    -- Subquery to look up names from your LicenseMap table and comma-separate them
+    (
+        SELECT STRING_AGG(CAST(m.Product_Display_Name AS NVARCHAR(MAX)), ', ')
+        FROM OPENJSON(u.LicensesJSON) 
+        WITH (skuId UNIQUEIDENTIFIER) AS json_licenses
+        LEFT JOIN LicenseMap m ON json_licenses.skuId = m.GUID
+    ) AS FriendlyLicenseNames
+FROM M365Users u;
 
 CREATE TABLE M365Users (
     UserID UNIQUEIDENTIFIER PRIMARY KEY,
