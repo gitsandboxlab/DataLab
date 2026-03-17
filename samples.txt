@@ -1,1 +1,25 @@
 # samples
+/* Use the Body from the HTTP action above */
+DECLARE @json NVARCHAR(MAX) = '@{string(body('GetActiveMembers')?['value'])}';
+DECLARE @grpName NVARCHAR(255) = '@{items('For_each_Group')?['displayName']}';
+
+IF @json <> '[]'
+BEGIN
+    INSERT INTO [dbo].[GroupMembershipAudit] (GroupName, UserObjectID, MembershipStatus)
+    SELECT @grpName, [id], 'Active'
+    FROM OPENJSON(@json)
+    WITH ([id] NVARCHAR(100));
+END
+
+
+/* Use the Body from the PIM HTTP action */
+DECLARE @json PIM NVARCHAR(MAX) = '@{string(body('GetEligibleMembers')?['value'])}';
+DECLARE @grpName PIM NVARCHAR(255) = '@{items('For_each_Group')?['displayName']}';
+
+IF @json <> '[]'
+BEGIN
+    INSERT INTO [dbo].[GroupMembershipAudit] (GroupName, UserObjectID, MembershipStatus)
+    SELECT @grpName, [principalId], 'Eligible'
+    FROM OPENJSON(@json)
+    WITH ([principalId] NVARCHAR(100));
+END
