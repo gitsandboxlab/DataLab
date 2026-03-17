@@ -1,1 +1,6 @@
+https://graph.microsoft.com/v1.0/privilegedAccess/aadgroups/resources/@{items('For_each_Group')?['id']}/roleAssignments?$filter=assignmentState eq 'Eligible'
+
+
+https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?$filter=directoryScopeId eq '/@ {items('For_each_Group')?['id']}'
+
 
