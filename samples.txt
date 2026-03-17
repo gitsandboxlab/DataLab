@@ -3,4 +3,5 @@ https://graph.microsoft.com/v1.0/privilegedAccess/aadgroups/resources/@{items('F
 
 https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?$filter=directoryScopeId eq '/@ {items('For_each_Group')?['id']}'
 
+GET https://graph.microsoft.com/v1.0/identityGovernance/privilegedAccess/group/eligibilitySchedules?$filter=groupId eq '{group-id}'
 
