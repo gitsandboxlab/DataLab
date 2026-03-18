@@ -3,3 +3,12 @@
 
 # Force Git to fail immediately if it can't authenticate, rather than hanging
 [Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
+
+# 1. Force Git to use Windows' native SSL (understands LDAPS/NTLM better)
+git config --system http.sslBackend schannel
+
+# 2. Specifically allow NTLM Auth (This is often disabled by default in newer Git versions)
+git config --system http.allowNTLMAuth true
+
+# 3. Prevent Git from hanging on invisible credential popups
+[Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
