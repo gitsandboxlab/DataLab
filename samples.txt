@@ -1,14 +1,77 @@
-# Stop the Git Credential Manager from popping up invisible windows
-[Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
+import asyncio
+import pandas as pd
+from sqlalchemy import create_engine, text
+from prefect.client.orchestration import get_client
+from prefect.client.schemas.filters import LogFilter, LogFilterTimestamp
 
-# Force Git to fail immediately if it can't authenticate, rather than hanging
-[Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
+# 1. Your SQLAlchemy Engine (Ensure fast_executemany=True for MS SQL)
+engine = create_engine(
+    "mssql+pyodbc://username:password@server/database?driver=ODBC+Driver+17+for+SQL+Server",
+    fast_executemany=True
+)
 
-# 1. Force Git to use Windows' native SSL (understands LDAPS/NTLM better)
-git config --system http.sslBackend schannel
+async def fetch_logs_since(since_timestamp) -> pd.DataFrame:
+    """Fetches all logs from Prefect API created after since_timestamp."""
+    async with get_client() as client:
+        all_logs = []
+        limit = 500
+        offset = 0
+        
+        while True:
+            # We use LogFilterTimestamp(after_=...) for the 'delta' fetch
+            batch = await client.read_logs(
+                log_filter=LogFilter(
+                    timestamp=LogFilterTimestamp(after_=since_timestamp)
+                ),
+                limit=limit,
+                offset=offset
+            )
+            
+            if not batch:
+                break
+                
+            all_logs.extend(batch)
+            offset += limit
+            
+        # Convert Pydantic models to a list of dicts
+        data = [
+            {
+                "id": str(l.id),
+                "flow_run_id": str(l.flow_run_id),
+                "timestamp": l.timestamp,
+                "level": l.level,
+                "message": l.message,
+                "name": l.name
+            }
+            for l in all_logs
+        ]
+        return pd.DataFrame(data)
 
-# 2. Specifically allow NTLM Auth (This is often disabled by default in newer Git versions)
-git config --system http.allowNTLMAuth true
+def run_hourly_sync():
+    # 2. Get the latest timestamp from your SQL Table
+    query = text("SELECT MAX(timestamp) FROM prefect_logs")
+    with engine.connect() as conn:
+        last_ts = conn.execute(query).scalar()
+    
+    # If table is empty, default to 1 hour ago (or 24 hours for safety)
+    if last_ts is None:
+        last_ts = pd.Timestamp.utcnow() - pd.Timedelta(hours=24)
+        print("Table is empty. Starting from last 24 hours.")
+    else:
+        print(f"Syncing logs created after: {last_ts}")
 
-# 3. Prevent Git from hanging on invisible credential popups
-[Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
+    # 3. Fetch from Prefect
+    new_logs_df = asyncio.run(fetch_logs_since(last_ts))
+
+    # 4. Write to SQL
+    if not new_logs_df.empty:
+        # Drop duplicates just in case (e.g., if two logs have the exact same microsecond)
+        new_logs_df = new_logs_df.drop_duplicates(subset=['id'])
+        
+        new_logs_df.to_sql("prefect_logs", engine, if_exists="append", index=False)
+        print(f"Successfully added {len(new_logs_df)} new logs.")
+    else:
+        print("No new logs found in the last hour.")
+
+if __name__ == "__main__":
+    run_hourly_sync()
