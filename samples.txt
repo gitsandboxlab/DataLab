@@ -1,7 +1,5 @@
-https://graph.microsoft.com/v1.0/privilegedAccess/aadgroups/resources/@{items('For_each_Group')?['id']}/roleAssignments?$filter=assignmentState eq 'Eligible'
+# Stop the Git Credential Manager from popping up invisible windows
+[Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
 
-
-https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules?$filter=directoryScopeId eq '/@ {items('For_each_Group')?['id']}'
-
-GET https://graph.microsoft.com/v1.0/identityGovernance/privilegedAccess/group/eligibilitySchedules?$filter=groupId eq '{group-id}'
-
+# Force Git to fail immediately if it can't authenticate, rather than hanging
+[Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
