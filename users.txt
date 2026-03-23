@@ -1,1 +1,22 @@
+# 1. Name of your User-Assigned Managed Identity
+$MIName = "Your-Managed-Identity-Name"
 
+# 2. The 3 key permissions for your Logic App
+$Permissions = @(
+    "DeviceManagementConfiguration.Read.All", 
+    "DeviceManagementManagedDevices.Read.All",
+    "User.Read.All"
+)
+
+# 3. Get IDs (Graph App ID is always the same)
+$MSI = Get-MgServicePrincipal -Filter "displayName eq '$MIName'"
+$Graph = Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'"
+
+# 4. Loop and assign
+foreach ($RoleName in $Permissions) {
+    $RoleId = ($Graph.AppRoles | Where-Object { $_.Value -eq $RoleName -and $_.AllowedMemberTypes -contains "Application" }).Id
+    if ($RoleId) {
+        New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $MSI.Id -PrincipalId $MSI.Id -ResourceId $Graph.Id -AppRoleId $RoleId
+        Write-Host "Successfully added $RoleName" -ForegroundColor Green
+    }
+}
