@@ -1,76 +1,41 @@
-from prefect.blocks.webhook import Webhook
-from prefect.utilities.asyncutils import run_coro_as_sync
+CREATE PROCEDURE [dbo].[sp_BulkInsertIntuneSettings]
+    @JsonData NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-def call_hook(block_name: str, payload: dict):
-    """
-    The actual Transport execution.
-    Handles the async Prefect block inside a sync wrapper.
-    """
-    async def _execute_call():
-        # Load the block and emit the POST request
-        webhook_block = await Webhook.load(block_name)
-        return await webhook_block.call(payload=payload)
-
-    # Bridge the gap: run the async code and return the result
-    return run_coro_as_sync(_execute_call())
-
-
-from prefect.variables import Variable
-from prefect.utilities.asyncutils import run_coro_as_sync
-
-def update_variable_key(variable_name: str, key: str, value: any):
-    """
-    Updates a single key inside a Prefect JSON variable without 
-    disturbing other existing keys.
-    """
-    # 1. Get the current dictionary
-    # We default to an empty dict if it doesn't exist
-    current_var = Variable.get(variable_name, default={})
-    
-    # Handle both Variable objects and raw dicts
-    data = current_var.value if hasattr(current_var, 'value') else current_var
-    
-    if not isinstance(data, dict):
-        raise ValueError(f"Variable '{variable_name}' must be a JSON/dict to update a key.")
-
-    # 2. Update the specific key
-    data[key] = value
-
-    # 3. Save the whole object back
-    run_coro_as_sync(
-        Variable.set(
-            name=variable_name,
-            value=data,
-            overwrite=True
-        )
+    INSERT INTO [dbo].[IntuneComplianceReport] (
+        IntuneSettingId, Setting, SettingName, DeviceId, DeviceName, 
+        UserId, UserEmail, UserName, UserPrincipalName, DeviceModel, 
+        [ComplianceState], ComplianceGracePeriodExpiration
     )
-    return data
-
-
-from datetime import datetime, timezone
-from my_lib.operate.utils import update_variable_key
-from my_lib.transport.hook import call_hook
-
-def alert_controller(block_name: str, flow_name: str, run_name: str, error_msg: str):
-    var_name = f"config_{flow_name.lower().replace(' ', '_')}"
-    
-    # ... (Your logic to check throttle_hours here) ...
-
-    # If we pass the throttle check:
-    try:
-        response = call_hook(block_name, {"error": error_msg})
-        
-        if response.status_code < 300:
-            # UPDATE ONLY ONE VALUE
-            now_str = datetime.now(timezone.utc).isoformat()
-            
-            update_variable_key(
-                variable_name=var_name,
-                key="last_run_val",
-                value=now_str
-            )
-            
-            print(f"Timestamp updated in {var_name}. throttle_hours remains unchanged.")
-
-    except Exception as e:
-        print(f"Failed: {e}")
+    SELECT 
+        id, 
+        setting, 
+        settingName, 
+        deviceId, 
+        deviceName, 
+        userId, 
+        userEmail, 
+        userName, 
+        userPrincipalName, 
+        deviceModel, 
+        [state],
+        -- Convert UTC to Pacific Standard Time
+        CAST(complianceGracePeriodExpirationDateTime AT TIME ZONE 'UTC' AT TIME ZONE 'Pacific Standard Time' AS DATETIME2)
+    FROM OPENJSON(@JsonData)
+    WITH (
+        id NVARCHAR(255),
+        setting NVARCHAR(MAX),
+        settingName NVARCHAR(255),
+        deviceId UNIQUEIDENTIFIER,
+        deviceName NVARCHAR(255),
+        userId NVARCHAR(255),
+        userEmail NVARCHAR(255),
+        userName NVARCHAR(255),
+        userPrincipalName NVARCHAR(255),
+        deviceModel NVARCHAR(255),
+        [state] NVARCHAR(50),
+        complianceGracePeriodExpirationDateTime DATETIMEOFFSET -- Read raw UTC first
+    );
+END
