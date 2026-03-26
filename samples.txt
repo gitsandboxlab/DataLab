@@ -1,41 +1,37 @@
-CREATE PROCEDURE [dbo].[sp_BulkInsertIntuneSettings]
-    @JsonData NVARCHAR(MAX)
-AS
-BEGIN
-    SET NOCOUNT ON;
+1. The "Network Spin-Lock" (HTTP/TCP Layer)
 
-    INSERT INTO [dbo].[IntuneComplianceReport] (
-        IntuneSettingId, Setting, SettingName, DeviceId, DeviceName, 
-        UserId, UserEmail, UserName, UserPrincipalName, DeviceModel, 
-        [ComplianceState], ComplianceGracePeriodExpiration
-    )
-    SELECT 
-        id, 
-        setting, 
-        settingName, 
-        deviceId, 
-        deviceName, 
-        userId, 
-        userEmail, 
-        userName, 
-        userPrincipalName, 
-        deviceModel, 
-        [state],
-        -- Convert UTC to Pacific Standard Time
-        CAST(complianceGracePeriodExpirationDateTime AT TIME ZONE 'UTC' AT TIME ZONE 'Pacific Standard Time' AS DATETIME2)
-    FROM OPENJSON(@JsonData)
-    WITH (
-        id NVARCHAR(255),
-        setting NVARCHAR(MAX),
-        settingName NVARCHAR(255),
-        deviceId UNIQUEIDENTIFIER,
-        deviceName NVARCHAR(255),
-        userId NVARCHAR(255),
-        userEmail NVARCHAR(255),
-        userName NVARCHAR(255),
-        userPrincipalName NVARCHAR(255),
-        deviceModel NVARCHAR(255),
-        [state] NVARCHAR(50),
-        complianceGracePeriodExpirationDateTime DATETIMEOFFSET -- Read raw UTC first
-    );
-END
+This is the most common cause of a full OS freeze on Windows.
+
+The Cause: Your workstation tries to connect to the Postgres server (or the Prefect API). If the connection is dropped silently (firewall) or rejected mid-handshake, the Python asyncio loop doesn't just wait—it "spins" its wheels at lightning speed trying to re-establish the socket.
+
+Why it locks the PC: On Windows, a single-threaded Python process hitting the network stack thousands of times per second can starve the kernel's I/O threads, making your mouse and keyboard unresponsive.
+
+The Sign: The Prefect UI shows a "Running" flow with zero logs because the connection died before the first log packet could be sent.
+
+2. VS Code GPU Rendering Conflict
+
+Since you are specifically using VS Code, the problem might not be the code, but the Terminal.
+
+The Cause: VS Code uses your GPU to render the terminal text. When a Python script (like a Prefect flow) outputs error text or "Retrying..." messages very quickly, it can cause a driver conflict.
+
+Why it locks the PC: A GPU driver hang on Windows often freezes the entire Desktop Window Manager (dwm.exe).
+
+The Test: If you run the script in a standard PowerShell window (outside VS Code) and it doesn't freeze, this is your culprit.
+
+Fix: Use prefect config set PREFECT_LOGGING_LEVEL=ERROR to stop the text flood.
+
+3. PostgreSQL "Connection Leaks" or SSL Hangs
+
+The Cause: If your Windows Server (NSSM) or Postgres is configured with a low max_connections limit, and your workstation keeps trying to open new ones without closing the old ones.
+
+The SSL Hang: If your Postgres requires SSL but your workstation is missing the root certificate, the Python ssl library can hang the interpreter during the handshake. This is a "Blocking" call that freezes the Python thread entirely.
+
+The Sign: You see "Idle" connections in your Postgres activity monitor that never close.
+
+4. Package Serialization (The "Heavy Data" Problem)
+
+The Cause: If you are passing a large Python object (like a massive list, a dictionary with 100k items, or a Pandas DataFrame) as a parameter to your @flow or @task.
+
+The Process: Prefect has to "pickle" (serialize) that data to send it to the Postgres database.
+
+Why it locks the PC: Serializing 500MB+ of data is a CPU-intensive, synchronous task. It will peg your workstation's CPU at 100% and consume all available RAM, causing the "Locked" feeling until the serialization finishes (or the PC crashes).
