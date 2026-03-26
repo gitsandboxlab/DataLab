@@ -1,41 +1,32 @@
+If the CLI is too slow or you have millions of rows, you can go directly into Postgres (via PGAdmin or psql) and truncate the logs. This is much faster.
 
-# 1. Force the Worker to give up quickly if the server lags
-prefect config set PREFECT_CLIENT_MAX_RETRIES=0
-prefect config set PREFECT_API_REQUEST_TIMEOUT=5.0
+SQL
+-- This keeps your flow history but deletes the heavy text logs
+TRUNCATE TABLE log;
 
-# 2. Slow down the 'Panic' frequency of the worker
-$env:PREFECT_WORKER_HEARTBEAT_SECONDS=30
-$env:PREFECT_CLIENT_RETRY_EXTRA_BACKOFF=5
+-- OR, if you want to keep recent logs but kill the bulk:
+DELETE FROM log WHERE created < NOW() - INTERVAL '7 days';
 
-# 3. Disable the 'High-Speed' logging that floods the terminal
-prefect config set PREFECT_LOGGING_LEVEL=ERROR
+-- CRITICAL: After deleting, you must 'reclaim' the space
+VACUUM FULL log;
+Intuition: Imagine a physical filing cabinet. Even if you throw away the papers, the cabinet still takes up the same space in the room. VACUUM FULL actually shrinks the "cabinet" so the Server can search it faster.
 
+3. The "Automated" Way (Retention Policy)
 
-# Replace 'test-pool' with your actual work pool name
-# If the Machine Freezes immediately: The issue is the Heartbeat/Socket (Firewall/EDR).
-# If it stays "Running" and waiting for jobs: The issue is your Flow Code/Imports (the "serialization" we discussed).
-prefect worker start --pool "test-pool" --limit 1
+If you don't want to do this again in three months, you should set a Retention Policy. In Prefect 3.x, you can automate this using a simple maintenance flow that runs once a week.
 
-# 1. Stop the infinite loop that freezes the mouse
-prefect config set PREFECT_CLIENT_MAX_RETRIES=0
+Python
+from prefect import flow
+from prefect.client.orchestration import get_client
+import datetime
 
-# 2. Give it a very short timeout so it crashes instead of hanging
-prefect config set PREFECT_API_REQUEST_TIMEOUT=2.0
+@flow
+def cleanup_old_runs():
+    async with get_client() as client:
+        # Define your 'cutoff'
+        before = datetime.datetime.now() - datetime.timedelta(days=30)
+        # This is a high-level API call to purge the DB
+        await client.delete_flow_runs(before=before)
 
-# 3. CRITICAL: Disable 'distributed' logging for this test
-# This prevents the workstation from 'choking' on its own log stream
-prefect config set PREFECT_LOGGING_LEVEL=ERROR
-$env:PREFECT_LOGGING_TO_API_ENABLED="False"
-
-#CREATE networkpacketcheck.py
-import httpx
-# Use your DNS name here
-url = "http://YOUR_SERVER_DNS:4200/api/health"
-print("Testing heavy payload connection...")
-try:
-    # Send a bunch of 'junk' headers to see if the network drops large packets
-    headers = {"X-Junk": "A" * 8000} 
-    r = httpx.get(url, headers=headers, timeout=2.0)
-    print(f"Success: {r.status_code}")
-except Exception as e:
-    print(f"FAILED: This confirms your network/MTU is dropping Prefect traffic: {e}")
+if __name__ == "__main__":
+    cleanup_old_runs()
