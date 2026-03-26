@@ -1,3 +1,4 @@
+
 # 1. Force the Worker to give up quickly if the server lags
 prefect config set PREFECT_CLIENT_MAX_RETRIES=0
 prefect config set PREFECT_API_REQUEST_TIMEOUT=5.0
@@ -8,3 +9,16 @@ $env:PREFECT_CLIENT_RETRY_EXTRA_BACKOFF=5
 
 # 3. Disable the 'High-Speed' logging that floods the terminal
 prefect config set PREFECT_LOGGING_LEVEL=ERROR
+
+
+# Replace 'test-pool' with your actual work pool name
+# If the Machine Freezes immediately: The issue is the Heartbeat/Socket (Firewall/EDR).
+# If it stays "Running" and waiting for jobs: The issue is your Flow Code/Imports (the "serialization" we discussed).
+prefect worker start --pool "test-pool" --limit 1
+
+1. The Postgres "WAL" or Disk Space Wall
+Since your Server, Worker, and Postgres are all on one machine, this is the #1 culprit.
+What happened: Postgres uses Write-Ahead Logs (WAL). If your database reached a certain size or your server's disk space dropped below a threshold (e.g., 10%), Postgres might have switched to "Synchronous Commit" or "Read-Only" mode.
+The Lock-up: When your workstation-worker tries to report a "Flow Started" status, the Prefect Server waits for Postgres to acknowledge the write. Postgres is "hanging" or "retrying" internally. The Prefect Server keeps the workstation's socket open but silent.
+The Freeze: Your workstation enters the "Busy-Wait" loop we discussed, pegging the CPU and freezing the UI while waiting for the server to say "Got it."
+Check: On the server, check the available disk space and look at the pg_log folder for "could not write to log file" errors.
