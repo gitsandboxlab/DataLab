@@ -16,9 +16,26 @@ prefect config set PREFECT_LOGGING_LEVEL=ERROR
 # If it stays "Running" and waiting for jobs: The issue is your Flow Code/Imports (the "serialization" we discussed).
 prefect worker start --pool "test-pool" --limit 1
 
-1. The Postgres "WAL" or Disk Space Wall
-Since your Server, Worker, and Postgres are all on one machine, this is the #1 culprit.
-What happened: Postgres uses Write-Ahead Logs (WAL). If your database reached a certain size or your server's disk space dropped below a threshold (e.g., 10%), Postgres might have switched to "Synchronous Commit" or "Read-Only" mode.
-The Lock-up: When your workstation-worker tries to report a "Flow Started" status, the Prefect Server waits for Postgres to acknowledge the write. Postgres is "hanging" or "retrying" internally. The Prefect Server keeps the workstation's socket open but silent.
-The Freeze: Your workstation enters the "Busy-Wait" loop we discussed, pegging the CPU and freezing the UI while waiting for the server to say "Got it."
-Check: On the server, check the available disk space and look at the pg_log folder for "could not write to log file" errors.
+# 1. Stop the infinite loop that freezes the mouse
+prefect config set PREFECT_CLIENT_MAX_RETRIES=0
+
+# 2. Give it a very short timeout so it crashes instead of hanging
+prefect config set PREFECT_API_REQUEST_TIMEOUT=2.0
+
+# 3. CRITICAL: Disable 'distributed' logging for this test
+# This prevents the workstation from 'choking' on its own log stream
+prefect config set PREFECT_LOGGING_LEVEL=ERROR
+$env:PREFECT_LOGGING_TO_API_ENABLED="False"
+
+#CREATE networkpacketcheck.py
+import httpx
+# Use your DNS name here
+url = "http://YOUR_SERVER_DNS:4200/api/health"
+print("Testing heavy payload connection...")
+try:
+    # Send a bunch of 'junk' headers to see if the network drops large packets
+    headers = {"X-Junk": "A" * 8000} 
+    r = httpx.get(url, headers=headers, timeout=2.0)
+    print(f"Success: {r.status_code}")
+except Exception as e:
+    print(f"FAILED: This confirms your network/MTU is dropping Prefect traffic: {e}")
