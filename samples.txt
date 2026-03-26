@@ -1,14 +1,10 @@
-import httpx
-import os
+# 1. Force the Worker to give up quickly if the server lags
+prefect config set PREFECT_CLIENT_MAX_RETRIES=0
+prefect config set PREFECT_API_REQUEST_TIMEOUT=5.0
 
-# Use the exact URL you have in your Prefect config
-url = "http://192.168.x.x:4200/api/health" 
+# 2. Slow down the 'Panic' frequency of the worker
+$env:PREFECT_WORKER_HEARTBEAT_SECONDS=30
+$env:PREFECT_CLIENT_RETRY_EXTRA_BACKOFF=5
 
-print(f"Attempting to ping Prefect API at {url}...")
-
-try:
-    # We set a very strict 2-second timeout and NO retries
-    response = httpx.get(url, timeout=2.0)
-    print(f"✅ Success! Status Code: {response.status_code}")
-except Exception as e:
-    print(f"❌ Failed! Error: {e}")
+# 3. Disable the 'High-Speed' logging that floods the terminal
+prefect config set PREFECT_LOGGING_LEVEL=ERROR
