@@ -1,3 +1,20 @@
+### Client-side log streaming deadlock (VERY common in Prefect 3)
+Ad hoc runs often try to stream logs back to the client.
+Key signal:
+Scheduled runs don’t stream logs to your workstation → they work fine
+Test this theory:
+
+Run WITHOUT log streaming:
+prefect deployment run <deployment-name> --no-wait
+
+OR in Python:
+from prefect.deployments import run_deployment
+
+run_deployment("name", timeout=0)
+If this works → log streaming is the culprit
+################
+
+
 If the CLI is too slow or you have millions of rows, you can go directly into Postgres (via PGAdmin or psql) and truncate the logs. This is much faster.
 
 SQL
