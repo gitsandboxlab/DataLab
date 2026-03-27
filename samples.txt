@@ -14,6 +14,23 @@ run_deployment("name", timeout=0)
 If this works → log streaming is the culprit
 ################
 
+##### Force short-lived API call
+curl http://<prefect-server>:4200/api/health
+Then:
+curl http://<prefect-server>:4200/api/flow_runs
+What you’re looking for:
+Fast response → basic connectivity OK
+Hanging / slow → network or API issue
+################
+
+##### Simulate long-lived request
+This is the key:
+curl http://<prefect-server>:4200/api/logs
+If this:
+hangs indefinitely
+or behaves inconsistently
+→ something is interfering with streaming endpoints
+###################
 
 If the CLI is too slow or you have millions of rows, you can go directly into Postgres (via PGAdmin or psql) and truncate the logs. This is much faster.
 
