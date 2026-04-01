@@ -1,66 +1,57 @@
-### Client-side log streaming deadlock (VERY common in Prefect 3)
-Ad hoc runs often try to stream logs back to the client.
-Key signal:
-Scheduled runs don’t stream logs to your workstation → they work fine
-Test this theory:
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+from datetime import datetime, timedelta
 
-Run WITHOUT log streaming:
-prefect deployment run <deployment-name> --no-wait
+# ----------------------------
+# CONFIGURATION
+# ----------------------------
+JIRA_DOMAIN = "your-domain.atlassian.net"   # e.g., "mycompany.atlassian.net"
+EMAIL = "your-email@example.com"            # Jira account email
+API_TOKEN = "your-api-token"                # Jira API token
+JQL_FILTER = "project = ABC AND status != Done"  # Your dynamic filter
+MAX_RESULTS = 100
 
-OR in Python:
-from prefect.deployments import run_deployment
+# ----------------------------
+# BUILD JQL FOR LAST 4 HOURS
+# ----------------------------
+jql_last_4_hours = f"{JQL_FILTER} AND updated >= -4h"
 
-run_deployment("name", timeout=0)
-If this works → log streaming is the culprit
-################
+# ----------------------------
+# SET UP REQUEST
+# ----------------------------
+url = f"https://{JIRA_DOMAIN}/rest/api/3/search"
+params = {
+    "jql": jql_last_4_hours,
+    "maxResults": MAX_RESULTS,
+    "fields": "summary,status,assignee,updated"  # adjust fields as needed
+}
 
-##### Force short-lived API call
-curl http://<prefect-server>:4200/api/health
-Then:
-curl http://<prefect-server>:4200/api/flow_runs
-What you’re looking for:
-Fast response → basic connectivity OK
-Hanging / slow → network or API issue
-################
+auth = HTTPBasicAuth(EMAIL, API_TOKEN)
+headers = {
+    "Accept": "application/json"
+}
 
-##### Simulate long-lived request
-This is the key:
-curl http://<prefect-server>:4200/api/logs
-If this:
-hangs indefinitely
-or behaves inconsistently
-→ something is interfering with streaming endpoints
-###################
+# ----------------------------
+# MAKE THE REQUEST
+# ----------------------------
+response = requests.get(url, headers=headers, params=params, auth=auth)
 
-If the CLI is too slow or you have millions of rows, you can go directly into Postgres (via PGAdmin or psql) and truncate the logs. This is much faster.
-
-SQL
--- This keeps your flow history but deletes the heavy text logs
-TRUNCATE TABLE log;
-
--- OR, if you want to keep recent logs but kill the bulk:
-DELETE FROM log WHERE created < NOW() - INTERVAL '7 days';
-
--- CRITICAL: After deleting, you must 'reclaim' the space
-VACUUM FULL log;
-Intuition: Imagine a physical filing cabinet. Even if you throw away the papers, the cabinet still takes up the same space in the room. VACUUM FULL actually shrinks the "cabinet" so the Server can search it faster.
-
-3. The "Automated" Way (Retention Policy)
-
-If you don't want to do this again in three months, you should set a Retention Policy. In Prefect 3.x, you can automate this using a simple maintenance flow that runs once a week.
-
-Python
-from prefect import flow
-from prefect.client.orchestration import get_client
-import datetime
-
-@flow
-def cleanup_old_runs():
-    async with get_client() as client:
-        # Define your 'cutoff'
-        before = datetime.datetime.now() - datetime.timedelta(days=30)
-        # This is a high-level API call to purge the DB
-        await client.delete_flow_runs(before=before)
-
-if __name__ == "__main__":
-    cleanup_old_runs()
+# ----------------------------
+# CHECK RESPONSE
+# ----------------------------
+if response.status_code == 200:
+    data = response.json()
+    issues = data.get("issues", [])
+    print(f"Found {len(issues)} issues updated in the last 4 hours:\n")
+    for issue in issues:
+        key = issue.get("key")
+        summary = issue["fields"].get("summary")
+        status = issue["fields"]["status"].get("name")
+        assignee = issue["fields"]["assignee"]
+        assignee_name = assignee["displayName"] if assignee else "Unassigned"
+        updated = issue["fields"].get("updated")
+        print(f"{key}: {summary} | Status: {status} | Assignee: {assignee_name} | Updated: {updated}")
+else:
+    print(f"Request failed with status code {response.status_code}")
+    print(response.text)
