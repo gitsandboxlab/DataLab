@@ -1,4 +1,58 @@
-| ldapsearch search="(&(servicePrincipalName=*)(objectCategory=person))" 
-| mvexpand servicePrincipalName
-| table sAMAccountName, servicePrincipalName, distinguishedName
-| rename sAMAccountName as User, servicePrincipalName as SPN
+import os
+import requests
+from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
+
+# 1. Load configuration
+load_dotenv()
+
+# Required from your .env file
+DOMAIN = os.getenv("JIRA_DOMAIN")      # e.g., "yourcompany.atlassian.net"
+CLOUD_ID = os.getenv("CLOUD_ID")        # The GUID from /_edge/tenant_info
+EMAIL = os.getenv("JIRA_EMAIL")
+API_TOKEN = os.getenv("JIRA_API_TOKEN")
+ISSUE_KEY = "PROJ-123"                 # The issue you want to pull from
+
+auth = HTTPBasicAuth(EMAIL, API_TOKEN)
+headers = {"Accept": "application/json"}
+
+def get_form_data():
+    # --- STEP 1: Get the Form ID attached to the issue ---
+    # This uses the standard Jira API to look at issue properties
+    prop_url = f"https://{DOMAIN}/rest/api/3/issue/{ISSUE_KEY}/properties/proforma.forms"
+    
+    prop_response = requests.get(prop_url, auth=auth, headers=headers)
+    
+    if prop_response.status_code != 200:
+        print(f"No forms found or error: {prop_response.status_code}")
+        return
+
+    forms_metadata = prop_response.json()
+    # Usually, an issue has one form, but it's an array. We'll take the first.
+    form_id = forms_metadata['value']['forms'][0]['id']
+    print(f"Found Form ID: {form_id}")
+
+    # --- STEP 2: Get the Answers using the NEW JSM API ---
+    # Note the change to api.atlassian.com and the use of CLOUD_ID
+    answers_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form/{form_id}/answers"
+    
+    answers_response = requests.get(answers_url, auth=auth, headers=headers)
+    
+    if answers_response.status_code == 200:
+        data = answers_response.json()
+        
+        # The 'answers' object uses Question IDs as keys (e.g., "1", "2")
+        answers = data.get("answers", {})
+        
+        print(f"--- Form Data for {ISSUE_KEY} ---")
+        for q_id, content in answers.items():
+            # 'answer' is the user's input
+            print(f"Question ID {q_id}: {content.get('answer')}")
+            
+        return data
+    else:
+        print(f"Failed to fetch answers: {answers_response.status_code}")
+        print(answers_response.text)
+
+if __name__ == "__main__":
+    get_form_data()
