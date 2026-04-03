@@ -3,56 +3,54 @@ import requests
 from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
 
-# 1. Load configuration
 load_dotenv()
 
-# Required from your .env file
-DOMAIN = os.getenv("JIRA_DOMAIN")      # e.g., "yourcompany.atlassian.net"
-CLOUD_ID = os.getenv("CLOUD_ID")        # The GUID from /_edge/tenant_info
+# Config
+DOMAIN = os.getenv("JIRA_DOMAIN") 
+CLOUD_ID = os.getenv("CLOUD_ID") # Get from /_edge/tenant_info
 EMAIL = os.getenv("JIRA_EMAIL")
 API_TOKEN = os.getenv("JIRA_API_TOKEN")
-ISSUE_KEY = "PROJ-123"                 # The issue you want to pull from
+ISSUE_KEY = "PROJ-123" 
 
 auth = HTTPBasicAuth(EMAIL, API_TOKEN)
-headers = {"Accept": "application/json"}
+headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
 
-def get_form_data():
-    # --- STEP 1: Get the Form ID attached to the issue ---
-    # This uses the standard Jira API to look at issue properties
-    prop_url = f"https://{DOMAIN}/rest/api/3/issue/{ISSUE_KEY}/properties/proforma.forms"
+def get_jsm_form_data():
+    # --- STEP 1: Get all forms attached to the issue directly ---
+    # This replaces the 'proforma.forms' property call
+    list_forms_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form"
     
-    prop_response = requests.get(prop_url, auth=auth, headers=headers)
+    response = requests.get(list_forms_url, auth=auth, headers=headers)
     
-    if prop_response.status_code != 200:
-        print(f"No forms found or error: {prop_response.status_code}")
+    if response.status_code != 200:
+        print(f"Error fetching forms list: {response.status_code}")
+        print(response.text)
         return
 
-    forms_metadata = prop_response.json()
-    # Usually, an issue has one form, but it's an array. We'll take the first.
-    form_id = forms_metadata['value']['forms'][0]['id']
-    print(f"Found Form ID: {form_id}")
+    forms = response.json() # This returns a list of form objects
+    
+    if not forms:
+        print(f"No forms found on issue {ISSUE_KEY}")
+        return
 
-    # --- STEP 2: Get the Answers using the NEW JSM API ---
-    # Note the change to api.atlassian.com and the use of CLOUD_ID
-    answers_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form/{form_id}/answers"
-    
-    answers_response = requests.get(answers_url, auth=auth, headers=headers)
-    
-    if answers_response.status_code == 200:
-        data = answers_response.json()
+    # Loop through each form found on the issue
+    for form_info in forms:
+        form_id = form_info['uuid'] # The new API uses 'uuid' instead of 'id'
+        print(f"Processing Form: {form_info.get('name')} (ID: {form_id})")
+
+        # --- STEP 2: Get Answers for this specific Form ---
+        answers_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form/{form_id}/answers"
+        ans_response = requests.get(answers_url, auth=auth, headers=headers)
         
-        # The 'answers' object uses Question IDs as keys (e.g., "1", "2")
-        answers = data.get("answers", {})
-        
-        print(f"--- Form Data for {ISSUE_KEY} ---")
-        for q_id, content in answers.items():
-            # 'answer' is the user's input
-            print(f"Question ID {q_id}: {content.get('answer')}")
-            
-        return data
-    else:
-        print(f"Failed to fetch answers: {answers_response.status_code}")
-        print(answers_response.text)
+        if ans_response.status_code == 200:
+            ans_data = ans_response.json()
+            print(f"Answers: {ans_data.get('answers')}")
+            # Here is where you would call your SQL Insert function
+        else:
+            print(f"Could not get answers for form {form_id}: {ans_response.status_code}")
 
 if __name__ == "__main__":
-    get_form_data()
+    get_jsm_form_data()
