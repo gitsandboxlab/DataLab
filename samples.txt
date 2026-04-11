@@ -1,56 +1,30 @@
-import os
-import requests
-from requests.auth import HTTPBasicAuth
-from dotenv import load_dotenv
+# --- CONFIGURATION ---
+# Use the UNC path (recommended) or a mapped drive letter (e.g., "Z:\Wheels")
+$NetworkWheelPath = "\\YourServer\SharedFolder\ProjectWheels"
+$RequiredPipVersion = "26.0.1"
 
-load_dotenv()
+Write-Host "--- Python Environment Setup (2026) ---" -ForegroundColor Cyan
 
-# Config
-DOMAIN = os.getenv("JIRA_DOMAIN") 
-CLOUD_ID = os.getenv("CLOUD_ID") # Get from /_edge/tenant_info
-EMAIL = os.getenv("JIRA_EMAIL")
-API_TOKEN = os.getenv("JIRA_API_TOKEN")
-ISSUE_KEY = "PROJ-123" 
-
-auth = HTTPBasicAuth(EMAIL, API_TOKEN)
-headers = {
-    "Accept": "application/json",
-    "Content-Type": "application/json"
+# 1. Create Virtual Environment if it doesn't exist
+if (!(Test-Path -Path ".venv")) {
+    Write-Host "[1/4] Creating Virtual Environment..." -ForegroundColor Yellow
+    python -m venv .venv
+} else {
+    Write-Host "[1/4] Virtual Environment already exists." -ForegroundColor Gray
 }
 
-def get_jsm_form_data():
-    # --- STEP 1: Get all forms attached to the issue directly ---
-    # This replaces the 'proforma.forms' property call
-    list_forms_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form"
-    
-    response = requests.get(list_forms_url, auth=auth, headers=headers)
-    
-    if response.status_code != 200:
-        print(f"Error fetching forms list: {response.status_code}")
-        print(response.text)
-        return
+# 2. Activate the Environment
+Write-Host "[2/4] Activating environment..." -ForegroundColor Yellow
+& .\.venv\Scripts\Activate.ps1
 
-    forms = response.json() # This returns a list of form objects
-    
-    if not forms:
-        print(f"No forms found on issue {ISSUE_KEY}")
-        return
+# 3. Standardize Pip using the Network Wheel
+# We use --no-index to force it to use the wheel on the network drive
+Write-Host "[3/4] Upgrading Pip to $RequiredPipVersion from network..." -ForegroundColor Yellow
+python -m pip install --no-index --find-links=$NetworkWheelPath pip==$RequiredPipVersion
 
-    # Loop through each form found on the issue
-    for form_info in forms:
-        form_id = form_info['uuid'] # The new API uses 'uuid' instead of 'id'
-        print(f"Processing Form: {form_info.get('name')} (ID: {form_id})")
+# 4. Sync Package Bundle from requirements.txt
+Write-Host "[4/4] Syncing package bundle from network..." -ForegroundColor Yellow
+pip install --no-index --find-links=$NetworkWheelPath -r requirements.txt
 
-        # --- STEP 2: Get Answers for this specific Form ---
-        answers_url = f"https://api.atlassian.com/jsm/forms/v1/cloud/{CLOUD_ID}/issue/{ISSUE_KEY}/form/{form_id}/answers"
-        ans_response = requests.get(answers_url, auth=auth, headers=headers)
-        
-        if ans_response.status_code == 200:
-            ans_data = ans_response.json()
-            print(f"Answers: {ans_data.get('answers')}")
-            # Here is where you would call your SQL Insert function
-        else:
-            print(f"Could not get answers for form {form_id}: {ans_response.status_code}")
-
-if __name__ == "__main__":
-    get_jsm_form_data()
+Write-Host "`nSUCCESS: Environment is synchronized and ready!" -ForegroundColor Green
+Write-Host "You can now run your code in VS Code." -ForegroundColor Gray
