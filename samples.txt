@@ -1,30 +1,14 @@
-# --- CONFIGURATION ---
-# Use the UNC path (recommended) or a mapped drive letter (e.g., "Z:\Wheels")
-$NetworkWheelPath = "\\YourServer\SharedFolder\ProjectWheels"
-$RequiredPipVersion = "26.0.1"
-
-Write-Host "--- Python Environment Setup (2026) ---" -ForegroundColor Cyan
-
-# 1. Create Virtual Environment if it doesn't exist
-if (!(Test-Path -Path ".venv")) {
-    Write-Host "[1/4] Creating Virtual Environment..." -ForegroundColor Yellow
-    python -m venv .venv
-} else {
-    Write-Host "[1/4] Virtual Environment already exists." -ForegroundColor Gray
-}
-
-# 2. Activate the Environment
-Write-Host "[2/4] Activating environment..." -ForegroundColor Yellow
-& .\.venv\Scripts\Activate.ps1
-
-# 3. Standardize Pip using the Network Wheel
-# We use --no-index to force it to use the wheel on the network drive
-Write-Host "[3/4] Upgrading Pip to $RequiredPipVersion from network..." -ForegroundColor Yellow
-python -m pip install --no-index --find-links=$NetworkWheelPath pip==$RequiredPipVersion
-
-# 4. Sync Package Bundle from requirements.txt
-Write-Host "[4/4] Syncing package bundle from network..." -ForegroundColor Yellow
-pip install --no-index --find-links=$NetworkWheelPath -r requirements.txt
-
-Write-Host "`nSUCCESS: Environment is synchronized and ready!" -ForegroundColor Green
-Write-Host "You can now run your code in VS Code." -ForegroundColor Gray
+=OR(
+    AND(
+        LEN([YourColumnName])=8,
+        MID([YourColumnName],3,1)=":",
+        MID([YourColumnName],6,1)=" ",
+        OR(RIGHT([YourColumnName],2)="AM",RIGHT([YourColumnName],2)="PM")
+    ),
+    AND(
+        LEN([YourColumnName])=7,
+        MID([YourColumnName],2,1)=":",
+        MID([YourColumnName],5,1)=" ",
+        OR(RIGHT([YourColumnName],2)="AM",RIGHT([YourColumnName],2)="PM")
+    )
+)
