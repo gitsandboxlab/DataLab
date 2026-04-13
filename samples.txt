@@ -1,14 +1,50 @@
-=OR(
-    AND(
-        LEN([YourColumnName])=8,
-        MID([YourColumnName],3,1)=":",
-        MID([YourColumnName],6,1)=" ",
-        OR(RIGHT([YourColumnName],2)="AM",RIGHT([YourColumnName],2)="PM")
-    ),
-    AND(
-        LEN([YourColumnName])=7,
-        MID([YourColumnName],2,1)=":",
-        MID([YourColumnName],5,1)=" ",
-        OR(RIGHT([YourColumnName],2)="AM",RIGHT([YourColumnName],2)="PM")
-    )
-)
+import pandas as pd
+from sqlalchemy import text
+
+
+def merge_table(source_engine, target_engine, source_table, target_table, key_columns, delete_missing=False):
+    """
+    Merge from a source table/view into a target table across different databases.
+    Reads source into a temp table on the target, then merges.
+    """
+    # Read source data
+    df = pd.read_sql(f"SELECT * FROM {source_table}", source_engine)
+
+    if df.empty:
+        return 0
+
+    all_columns = df.columns.tolist()
+    update_columns = [col for col in all_columns if col not in key_columns]
+    temp_table = "#temp_merge_source"
+
+    # Write to temp table on target
+    df.to_sql(temp_table, target_engine, if_exists="replace", index=False)
+
+    key_join = " AND ".join([f"target.[{col}] = source.[{col}]" for col in key_columns])
+    update_set = ", ".join([f"target.[{col}] = source.[{col}]" for col in update_columns])
+    insert_cols = ", ".join([f"[{col}]" for col in all_columns])
+    insert_vals = ", ".join([f"source.[{col}]" for col in all_columns])
+
+    merge_sql = f"""
+        MERGE {target_table} AS target
+        USING {temp_table} AS source
+        ON {key_join}
+        WHEN MATCHED THEN
+            UPDATE SET {update_set}
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT ({insert_cols})
+            VALUES ({insert_vals})
+    """
+
+    if delete_missing:
+        merge_sql += """
+        WHEN NOT MATCHED BY SOURCE THEN
+            DELETE
+        """
+
+    merge_sql += ";"
+
+    with target_engine.begin() as conn:
+        result = conn.execute(text(merge_sql))
+        conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+        return result.rowcount
