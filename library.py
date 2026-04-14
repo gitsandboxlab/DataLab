@@ -1,48 +1,58 @@
+“””
+snowflake_model_a_flow.py
+Orchestration flow for Snowflake Model A.
 
-# 
-# 1. Connect as a Global Admin
-Connect-MgGraph -Scopes "AppRoleAssignment.ReadWrite.All", "Application.Read.All"
+Prefect Variables required (set in Prefect UI):
 
-# 2. Paste your User-Assigned Identity's PRINCIPAL ID here
-$userManagedIdentityId = "YOUR_USER_ASSIGNED_PRINCIPAL_ID"
+- model_a_sp_config          (JSON array)
+- model_a_validation_config  (JSON array)
 
-# 3. Get the Microsoft Graph Service Principal
-$graphAppId = "00000003-0000-0000-c000-000000000000"
-$graphServicePrincipal = Get-MgServicePrincipal -Filter "AppId eq '$graphAppId'"
+Example model_a_sp_config:
+[
+{“name”: “usp_load_dim_customer”, “order”: 1, “timeout”: 120},
+{“name”: “usp_load_dim_product”,  “order”: 2, “timeout”: 120},
+{“name”: “usp_load_fact_sales”,   “order”: 3, “timeout”: 300}
+]
 
-# 4. Find the 'Application.Read.All' role ID
-$appReadRole = $graphServicePrincipal.AppRoles | Where-Object {$_.Value -eq "Application.Read.All"}
+Example model_a_validation_config:
+[
+{“check”: “row_count”,  “table”: “dbo.customers”,  “min_rows”: 1000},
+{“check”: “freshness”,  “table”: “dbo.orders”,     “column”: “load_date”, “hours”: 24},
+{“check”: “null_rate”,  “table”: “dbo.orders”,     “column”: “customer_id”, “max_pct”: 0.05},
+{“check”: “referential_integrity”,
+“fact_table”: “dbo.fact_sales”, “fact_column”: “customer_id”,
+“dim_table”: “dbo.dim_customer”, “dim_column”: “customer_id”, “max_orphan_pct”: 0.01}
+]
+“””
 
-# 5. Assign the permission
-$params = @{
-    "PrincipalId" = $userManagedIdentityId
-    "ResourceId"  = $graphServicePrincipal.Id
-    "AppRoleId"   = $appReadRole.Id
-}
+from prefect import flow
+from prefect.variables import Variable
+from sqlalchemy.engine import Engine
 
-New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $userManagedIdentityId @params
+from lib.model_runner import run_model
+from lib.validation import build_checks
 
-Write-Host "Success! Your User-Assigned Identity can now read all App Secrets." -ForegroundColor Green
+# —————————————————————————
 
+# Replace with your engine factory or inject at call time
 
+# —————————————————————————
 
-# Sample Code
+def get_engine() -> Engine:
+from your_ingestion_lib import create_engine  # your existing engine
+return create_engine()
 
--- Assuming your table is called 'SourceTable' and column is 'JsonData'
-SELECT 
-    JSON_VALUE(item.value, '$.id') AS PrincipalId, -- If pulling from root
-    App.*
-FROM SourceTable
-CROSS APPLY OPENJSON(JsonData) 
-WITH (
-    id UNIQUEIDENTIFIER '$.id',
-    displayName NVARCHAR(255) '$.displayName',
-    endDateTime DATETIME2 '$.endDateTime',
-    usage NVARCHAR(50) '$.usage'
-) AS App;
+@flow(name=“snowflake_model_a”, log_prints=True)
+def snowflake_model_a_flow():
+engine = get_engine()
 
-Active Membership
-`GET https://graph.microsoft.com/v1.0/users/{user-id}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName`
+```
+sp_config = Variable.get("model_a_sp_config")
+val_config = Variable.get("model_a_validation_config")
 
-Get Eligible Memberships
-`GET https://graph.microsoft.com/v1.0/identityGovernance/privilegedAccess/group/eligibilitySchedules?$filter=principalId eq '{user-id}'`
+checks = build_checks(val_config)
+run_model(engine, sp_config, checks)
+```
+
+if **name** == “**main**”:
+snowflake_model_a_flow()
