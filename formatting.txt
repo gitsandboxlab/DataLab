@@ -1,22 +1,15 @@
-<style>
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    font-family: Arial, sans-serif;
-  }
-  th {
-    background-color: #f2f2f2;
-    color: #333;
-    text-align: left; /* This left-aligns your headers */
-    padding: 12px;
-    border: 1px solid #ddd; /* This adds the header border */
-  }
-  td {
-    padding: 12px;
-    text-align: left;
-    border: 1px solid #ddd; /* This adds the cell borders */
-  }
-  tr:nth-child(even) {
-    background-color: #f9f9f9; /* This adds zebra stripes for readability */
-  }
-</style>
+| ldapsearch domain="YOURBANKDOMAIN" search="(&(objectClass=user)(servicePrincipalName=*))" 
+| fields sAMAccountName, servicePrincipalName, lastLogonTimestamp, distinguishedName
+| mvexpand servicePrincipalName
+| rename sAMAccountName as Service_Account
+| eval Service_Account_Lower = lower(Service_Account)
+| join type=left Service_Account_Lower [
+    search index=wineventlog EventCode=4769 Service_Name!="krbtgt" Service_Name!="*$" Status="0x0"
+    | eval Service_Account_Lower = lower(Service_Name)
+    | stats count as Traffic_Count, max(_time) as Last_Seen_Traffic by Service_Account_Lower
+]
+| fillnull value=0 Traffic_Count
+| eval Audit_Status = if(Traffic_Count == 0, "DORMANT", "ACTIVE")
+| eval Last_Seen_Traffic = strftime(Last_Seen_Traffic, "%Y-%m-%d %H:%M:%S")
+| table Service_Account, Audit_Status, servicePrincipalName, Traffic_Count, Last_Seen_Traffic, distinguishedName
+| sort Audit_Status, Traffic_Count
