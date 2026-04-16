@@ -1,7 +1,7 @@
 """
 validation.py
-Reusable validation check functions and check builder.
-Each check function takes an engine + kwargs and returns (bool, str).
+Validation engine. Call run_validations() with your engine and config.
+Returns (bool, list of result messages).
 """
 
 import logging
@@ -14,53 +14,40 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Check functions
+# Check functions — each returns (bool, str)
 # ---------------------------------------------------------------------------
 
-def check_row_count(engine: Engine, table: str, min_rows: int) -> tuple[bool, str]:
-    """Fails if table has fewer rows than min_rows."""
+def _check_row_count(engine: Engine, table: str, min_rows: int) -> tuple[bool, str]:
     df = pd.read_sql(f"SELECT COUNT(*) AS cnt FROM {table}", engine)
     count = int(df["cnt"].iloc[0])
     passed = count >= min_rows
-    msg = f"[row_count] {table}: {count} rows (min={min_rows})"
-    return passed, msg
+    return passed, f"[row_count] {table}: {count} rows (min={min_rows})"
 
 
-def check_freshness(engine: Engine, table: str, column: str, hours: int) -> tuple[bool, str]:
-    """Fails if the max value of a date column is older than N hours."""
+def _check_freshness(engine: Engine, table: str, column: str, hours: int) -> tuple[bool, str]:
     df = pd.read_sql(f"SELECT MAX({column}) AS max_date FROM {table}", engine)
     max_date = df["max_date"].iloc[0]
-
     if max_date is None:
         return False, f"[freshness] {table}.{column}: no data found"
-
     max_date = pd.Timestamp(max_date).to_pydatetime().replace(tzinfo=None)
     cutoff = datetime.utcnow() - timedelta(hours=hours)
     passed = max_date >= cutoff
-    msg = f"[freshness] {table}.{column}: max={max_date} (cutoff={cutoff})"
-    return passed, msg
+    return passed, f"[freshness] {table}.{column}: max={max_date} (cutoff={cutoff})"
 
 
-def check_null_rate(engine: Engine, table: str, column: str, max_pct: float) -> tuple[bool, str]:
-    """Fails if the NULL rate of a column exceeds max_pct (0.0 - 1.0)."""
+def _check_null_rate(engine: Engine, table: str, column: str, max_pct: float) -> tuple[bool, str]:
     df = pd.read_sql(
-        f"""
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN {column} IS NULL THEN 1 ELSE 0 END) AS nulls
-        FROM {table}
-        """,
+        f"SELECT COUNT(*) AS total, SUM(CASE WHEN {column} IS NULL THEN 1 ELSE 0 END) AS nulls FROM {table}",
         engine,
     )
     total = int(df["total"].iloc[0])
     nulls = int(df["nulls"].iloc[0])
     rate = nulls / total if total > 0 else 1.0
     passed = rate <= max_pct
-    msg = f"[null_rate] {table}.{column}: {rate:.2%} nulls (max={max_pct:.2%})"
-    return passed, msg
+    return passed, f"[null_rate] {table}.{column}: {rate:.2%} nulls (max={max_pct:.2%})"
 
 
-def check_referential_integrity(
+def _check_referential_integrity(
     engine: Engine,
     fact_table: str,
     fact_column: str,
@@ -68,12 +55,10 @@ def check_referential_integrity(
     dim_column: str,
     max_orphan_pct: float = 0.0,
 ) -> tuple[bool, str]:
-    """Fails if orphaned FK rows in fact_table exceed max_orphan_pct."""
     df = pd.read_sql(
         f"""
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN d.{dim_column} IS NULL THEN 1 ELSE 0 END) AS orphans
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN d.{dim_column} IS NULL THEN 1 ELSE 0 END) AS orphans
         FROM {fact_table} f
         LEFT JOIN {dim_table} d ON f.{fact_column} = d.{dim_column}
         """,
@@ -83,55 +68,79 @@ def check_referential_integrity(
     orphans = int(df["orphans"].iloc[0])
     rate = orphans / total if total > 0 else 0.0
     passed = rate <= max_orphan_pct
-    msg = (
+    return passed, (
         f"[ref_integrity] {fact_table}.{fact_column} -> {dim_table}.{dim_column}: "
         f"{rate:.2%} orphans (max={max_orphan_pct:.2%})"
     )
-    return passed, msg
 
 
-def check_custom_sql(engine: Engine, sql: str, expected: bool = True) -> tuple[bool, str]:
-    """
-    Runs arbitrary SQL that must return a single boolean-castable value.
-    Use for one-off assertions that don't fit other check types.
-    Example sql: "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END FROM dbo.my_table WHERE status = 'READY'"
-    """
+def _check_custom_sql(engine: Engine, sql: str, expected: bool = True) -> tuple[bool, str]:
     df = pd.read_sql(sql, engine)
     result = bool(df.iloc[0, 0])
     passed = result == expected
-    msg = f"[custom_sql] result={result} (expected={expected}) | sql={sql[:80]}..."
-    return passed, msg
+    return passed, f"[custom_sql] result={result} (expected={expected}) | sql={sql[:80]}..."
 
 
-# ---------------------------------------------------------------------------
-# Registry + builder
-# ---------------------------------------------------------------------------
-
-CHECK_REGISTRY: dict[str, callable] = {
-    "row_count": check_row_count,
-    "freshness": check_freshness,
-    "null_rate": check_null_rate,
-    "referential_integrity": check_referential_integrity,
-    "custom_sql": check_custom_sql,
+_CHECK_REGISTRY = {
+    "row_count": _check_row_count,
+    "freshness": _check_freshness,
+    "null_rate": _check_null_rate,
+    "referential_integrity": _check_referential_integrity,
+    "custom_sql": _check_custom_sql,
 }
 
 
-def build_checks(val_config: list[dict]) -> list[callable]:
-    """
-    Converts a list of validation config dicts (from Prefect Variable)
-    into a list of callables that each accept only an engine.
+# ---------------------------------------------------------------------------
+# Validation engine — single entry point
+# ---------------------------------------------------------------------------
 
-    Example config entry:
-        {"check": "row_count", "table": "dbo.customers", "min_rows": 1000}
+def run_validations(engine: Engine, val_config: list[dict]) -> tuple[bool, list[str]]:
     """
-    checks = []
+    Runs all validation checks from config. All checks run regardless of failures
+    so the full picture is available in logs.
+
+    Args:
+        engine:     SQLAlchemy engine.
+        val_config: List of check dicts from Prefect Variable.
+                    Each must have a "check" key matching a registered check type.
+
+    Returns:
+        (all_passed: bool, messages: list[str])
+
+    Example config:
+        [
+          {"check": "row_count",  "table": "dbo.customers", "min_rows": 1000},
+          {"check": "freshness",  "table": "dbo.orders", "column": "load_date", "hours": 24},
+          {"check": "null_rate",  "table": "dbo.orders", "column": "customer_id", "max_pct": 0.05}
+        ]
+    """
+    messages = []
+    all_passed = True
+
     for entry in val_config:
         check_name = entry.get("check")
-        if check_name not in CHECK_REGISTRY:
-            raise ValueError(f"Unknown check type: '{check_name}'. Available: {list(CHECK_REGISTRY)}")
+        if check_name not in _CHECK_REGISTRY:
+            msg = f"[unknown_check] '{check_name}' not in registry. Available: {list(_CHECK_REGISTRY)}"
+            messages.append(msg)
+            logger.error(msg)
+            all_passed = False
+            continue
 
-        fn = CHECK_REGISTRY[check_name]
+        fn = _CHECK_REGISTRY[check_name]
         kwargs = {k: v for k, v in entry.items() if k != "check"}
-        checks.append(lambda e, fn=fn, kwargs=kwargs: fn(e, **kwargs))
 
-    return checks
+        try:
+            passed, msg = fn(engine, **kwargs)
+            messages.append(msg)
+            if passed:
+                logger.info(f"✓ {msg}")
+            else:
+                logger.warning(f"✗ {msg}")
+                all_passed = False
+        except Exception as e:
+            msg = f"[{check_name}] Exception: {e}"
+            messages.append(msg)
+            logger.error(f"✗ {msg}")
+            all_passed = False
+
+    return all_passed, messages
