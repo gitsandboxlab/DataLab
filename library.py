@@ -1,58 +1,76 @@
-“””
-snowflake_model_a_flow.py
-Orchestration flow for Snowflake Model A.
+import requests
+import base64
+import json
 
-Prefect Variables required (set in Prefect UI):
+# ─────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────
+EMAIL = "your-email@domain.com"
+API_TOKEN = "your-api-token"
+WORKSPACE_ID = "your-workspace-id"
+SCHEMA_ID = "your-schema-id"
 
-- model_a_sp_config          (JSON array)
-- model_a_validation_config  (JSON array)
+BASE_URL = f"https://api.atlassian.com/jsm/assets/workspace/{WORKSPACE_ID}/v1"
 
-Example model_a_sp_config:
-[
-{“name”: “usp_load_dim_customer”, “order”: 1, “timeout”: 120},
-{“name”: “usp_load_dim_product”,  “order”: 2, “timeout”: 120},
-{“name”: “usp_load_fact_sales”,   “order”: 3, “timeout”: 300}
-]
+credentials = base64.b64encode(f"{EMAIL}:{API_TOKEN}".encode()).decode()
+HEADERS = {
+    "Authorization": f"Basic {credentials}",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
 
-Example model_a_validation_config:
-[
-{“check”: “row_count”,  “table”: “dbo.customers”,  “min_rows”: 1000},
-{“check”: “freshness”,  “table”: “dbo.orders”,     “column”: “load_date”, “hours”: 24},
-{“check”: “null_rate”,  “table”: “dbo.orders”,     “column”: “customer_id”, “max_pct”: 0.05},
-{“check”: “referential_integrity”,
-“fact_table”: “dbo.fact_sales”, “fact_column”: “customer_id”,
-“dim_table”: “dbo.dim_customer”, “dim_column”: “customer_id”, “max_orphan_pct”: 0.01}
-]
-“””
 
-from prefect import flow
-from prefect.variables import Variable
-from sqlalchemy.engine import Engine
+# ─────────────────────────────────────────
+# MAIN FUNCTION
+# ─────────────────────────────────────────
+def fetch_and_save_assets(schema_id, output_file="assets_output.json"):
+    all_objects = []
+    start_at = 0
+    max_results = 50
+    is_last = False
 
-from lib.model_runner import run_model
-from lib.validation import build_checks
+    print(f"Fetching assets for schema ID: {schema_id}...")
 
-# —————————————————————————
+    # Paginate through all objects
+    while not is_last:
+        payload = {
+            "qlQuery": f"objectSchemaId = {schema_id}",
+            "startAt": start_at,
+            "maxResults": max_results
+        }
 
-# Replace with your engine factory or inject at call time
+        response = requests.post(
+            f"{BASE_URL}/object/aql",
+            headers=HEADERS,
+            json=payload
+        )
 
-# —————————————————————————
+        if response.status_code != 200:
+            print(f"Error {response.status_code}: {response.text}")
+            return
 
-def get_engine() -> Engine:
-from your_ingestion_lib import create_engine  # your existing engine
-return create_engine()
+        data = response.json()
+        objects = data.get("values", [])
+        all_objects.extend(objects)
+        is_last = data.get("isLast", True)
+        start_at += max_results
 
-@flow(name=“snowflake_model_a”, log_prints=True)
-def snowflake_model_a_flow():
-engine = get_engine()
+        print(f"  Fetched {len(all_objects)} objects so far...")
 
-```
-sp_config = Variable.get("model_a_sp_config")
-val_config = Variable.get("model_a_validation_config")
+    # Save to JSON
+    with open(output_file, "w") as f:
+        json.dump(all_objects, f, indent=2)
 
-checks = build_checks(val_config)
-run_model(engine, sp_config, checks)
-```
+    # Print summary
+    print(f"\nTotal assets fetched: {len(all_objects)}")
+    print(f"Saved to {output_file}")
+    print("\nAsset Summary:")
+    for obj in all_objects:
+        print(f"  ID: {obj.get('id')}  |  Name: {obj.get('name')}  |  Type: {obj.get('objectType', {}).get('name')}")
 
-if **name** == “**main**”:
-snowflake_model_a_flow()
+
+# ─────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────
+if __name__ == "__main__":
+    fetch_and_save_assets(SCHEMA_ID)
