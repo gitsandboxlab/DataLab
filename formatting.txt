@@ -1,122 +1,49 @@
-================================================================================
-DATA PIPELINE LINEAGE - TABLE DEFINITIONS
-================================================================================
+graph TD
+    %% Define Nodes
+    subgraph Enterprise_Users [Company Users / Brains]
+        A1[<b>AI Agent A</b><br/>(Internal App)]
+        A2[<b>AI Agent B</b><br/>(Jira Bot)]
+        A3[<b>User C</b><br/>(Claude Desktop)]
+    end
 
+    subgraph Internal_Network [Data Engineering "Body" / VPC]
+        direction TB
+        L[<b>Load Balancer</b><br/>/ Gateway]
+        
+        subgraph Container_Cluster [Docker/K8s Cluster]
+            direction TB
+            B1(<b>MCP SQL Server Instance 1</b>)
+            B2(<b>MCP SQL Server Instance 2</b>)
+        end
+        
+        C[(<b>SQL Server</b><br/>Data Warehouse)]
+    end
 
---------------------------------------------------------------------------------
-TABLE: dbo.Job
-PURPOSE: Master registry of all jobs (scripts, stored procedures, logic apps, etc.)
-         that participate in data pipeline flows. One row per job.
---------------------------------------------------------------------------------
+    %% Remote Communication
+    A1 -- "SSE/WebSockets (remote)" --> L
+    A2 -- "SSE/WebSockets" --> L
+    A3 -- "SSE/WebSockets" --> L
+    
+    L --> B1
+    L --> B2
+    
+    %% Database Connection
+    B1 --> C
+    B2 --> C
 
-    job_id               INT IDENTITY       -- surrogate primary key, auto-incremented
-    job_name             VARCHAR(255)       -- human-readable name e.g. "Load Sales Fact"
-    job_type             VARCHAR(100)       -- technology used: 'python_script',
-                                           --   'stored_procedure', 'logic_app', 'notebook', etc.
-    job_description      VARCHAR(1000)      -- what the job does in plain language
-    job_owner            VARCHAR(255)       -- team or individual responsible for this job
-    is_active            BIT                -- 0 = retired/disabled, 1 = currently in use
-    created_date         DATETIME           -- when this record was first inserted
-    modified_date        DATETIME           -- when this record was last updated
+    %% Styling
+    style Internal_Network fill:#f5f7fa,stroke:#2d3748,stroke-width:2px,rx:5,ry:5;
+    style Enterprise_Users fill:#ebf8ff,stroke:#3182ce,stroke-width:2px,rx:5,ry:5;
+    style Container_Cluster fill:#ebf8ff,stroke:#3182ce,stroke-width:2px,stroke-dasharray: 5 5,rx:5,ry:5;
+    
+    style A1 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
+    style A2 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
+    style A3 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
+    
+    style L fill:#48bb78,stroke:#1c4532,stroke-width:1px,color:white,rx:3,ry:3;
+    style B1 fill:#3182ce,stroke:#1a365d,stroke-width:2px,rx:5,ry:5;
+    style B2 fill:#3182ce,stroke:#1a365d,stroke-width:2px,rx:5,ry:5;
+    style C fill:#4a5568,stroke:#2d3748,stroke-width:2px,color:white,rx:5,ry:5;
 
-
---------------------------------------------------------------------------------
-TABLE: dbo.Node
-PURPOSE: Registry of all data sources and destinations associated to a job.
-         A node is any table, file, API, or storage location a job reads from
-         or writes to. Scoped to the job -- one row per node per job.
---------------------------------------------------------------------------------
-
-    node_id              INT IDENTITY       -- surrogate primary key, auto-incremented
-    job_id               INT                -- FK to dbo.Job; which job owns this node
-    node_name            VARCHAR(255)       -- name of the table, file, API endpoint, etc.
-    node_type            VARCHAR(100)       -- role of this node in the job: 'source',
-                                           --   'destination', or 'lookup'
-    node_source_type     VARCHAR(100)       -- technology/platform of the node: 'mssql',
-                                           --   'blob_storage', 'api', 'csv', 'sharepoint', etc.
-    node_schema          VARCHAR(100)       -- database schema if applicable e.g. 'dbo'
-                                           --   NULL for non-database nodes
-    node_database        VARCHAR(255)       -- database or storage account name if applicable
-                                           --   NULL for non-database nodes
-    node_description     VARCHAR(1000)      -- what this node represents in plain language
-    is_active            BIT                -- 0 = no longer used, 1 = currently in use
-    created_date         DATETIME           -- when this record was first inserted
-    modified_date        DATETIME           -- when this record was last updated
-
-
---------------------------------------------------------------------------------
-TABLE: dbo.Lineage
-PURPOSE: Append-only log of every source-to-destination data movement that occurs
-         during a job run. This is the actual lineage -- join to dbo.Job and
-         dbo.Node to trace where data came from and where it went.
-         Multiple rows are expected per job run (one per source/target pair).
-         Use run_id to group all rows belonging to the same execution of a job.
---------------------------------------------------------------------------------
-
-    lineage_id           INT IDENTITY       -- surrogate primary key, auto-incremented
-    run_id               UNIQUEIDENTIFIER   -- groups all log rows for a single job execution;
-                                           --   generated once at job start (e.g. uuid.uuid4())
-                                           --   and passed to every row logged during that run
-    job_id               INT                -- FK to dbo.Job; which job produced this row
-    source_node_id       INT                -- FK to dbo.Node; where data was read from
-    target_node_id       INT                -- FK to dbo.Node; where data was written to
-    status               VARCHAR(50)        -- outcome of this specific movement:
-                                           --   'started', 'completed', 'failed'
-    rows_read            INT                -- number of rows read from the source node
-                                           --   NULL if not applicable or not yet known
-    rows_written         INT                -- number of rows written to the target node
-                                           --   NULL if not applicable or not yet known
-    error_message        VARCHAR(MAX)       -- populated on failure; NULL if successful
-    started_at           DATETIME           -- when this source-to-target movement began
-    completed_at         DATETIME           -- when this source-to-target movement finished
-                                           --   NULL if still in progress or failed before completion
-    duration_seconds     INT                -- elapsed time logged explicitly at completion
-                                           --   avoids recalculating from started_at/completed_at
-    created_date         DATETIME           -- when this log row was inserted
-
-
-================================================================================
-RELATIONSHIPS
-================================================================================
-
-    dbo.Job
-        └── dbo.Node       (dbo.Node.job_id           -> dbo.Job.job_id)
-        └── dbo.Lineage    (dbo.Lineage.job_id         -> dbo.Job.job_id)
-                └── source trace  (dbo.Lineage.source_node_id -> dbo.Node.node_id)
-                └── target trace  (dbo.Lineage.target_node_id -> dbo.Node.node_id)
-
-
-================================================================================
-COMMON QUERIES
-================================================================================
-
--- All runs for a specific job
-SELECT * FROM dbo.Lineage
-WHERE job_id = 1
-ORDER BY started_at DESC;
-
--- All rows belonging to a single run
-SELECT * FROM dbo.Lineage
-WHERE run_id = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
-
--- Full lineage trace: every job that ever wrote to a specific table
-SELECT j.job_name, l.run_id, l.rows_written, l.started_at
-FROM dbo.Lineage l
-JOIN dbo.Job  j ON l.job_id        = j.job_id
-JOIN dbo.Node n ON l.target_node_id = n.node_id
-WHERE n.node_name = 'SalesFactTable'
-ORDER BY l.started_at DESC;
-
--- All sources and targets for a specific job run
-SELECT
-    src.node_name   AS source,
-    tgt.node_name   AS target,
-    l.rows_read,
-    l.rows_written,
-    l.status
-FROM dbo.Lineage l
-JOIN dbo.Node src ON l.source_node_id = src.node_id
-JOIN dbo.Node tgt ON l.target_node_id = tgt.node_id
-WHERE l.run_id = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
-
-================================================================================
+    linkStyle 0,1,2,3,4 stroke:#3182ce,stroke-width:2px;
+    linkStyle 5,6 stroke:#4a5568,stroke-width:2px,stroke-dasharray: 2 2;
