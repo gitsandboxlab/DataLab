@@ -1,92 +1,122 @@
-STEPS TO CALL JIRA ASSETS WITH LOGIC APP
-==========================================
-
-PREREQUISITES
--------------
-- Jira Cloud instance with Assets enabled
-- Azure Logic App (Consumption or Standard)
-- Jira API token (generated from your Atlassian account)
+================================================================================
+DATA PIPELINE LINEAGE - TABLE DEFINITIONS
+================================================================================
 
 
-STEP 1: GENERATE A JIRA API TOKEN
-----------------------------------
-1. Go to https://id.atlassian.com > Security > Create and manage API tokens
-2. Click "Create API token", give it a label, and copy the token
+--------------------------------------------------------------------------------
+TABLE: dbo.Job
+PURPOSE: Master registry of all jobs (scripts, stored procedures, logic apps, etc.)
+         that participate in data pipeline flows. One row per job.
+--------------------------------------------------------------------------------
+
+    job_id               INT IDENTITY       -- surrogate primary key, auto-incremented
+    job_name             VARCHAR(255)       -- human-readable name e.g. "Load Sales Fact"
+    job_type             VARCHAR(100)       -- technology used: 'python_script',
+                                           --   'stored_procedure', 'logic_app', 'notebook', etc.
+    job_description      VARCHAR(1000)      -- what the job does in plain language
+    job_owner            VARCHAR(255)       -- team or individual responsible for this job
+    is_active            BIT                -- 0 = retired/disabled, 1 = currently in use
+    created_date         DATETIME           -- when this record was first inserted
+    modified_date        DATETIME           -- when this record was last updated
 
 
-STEP 2: CREATE THE BASIC AUTH CREDENTIAL
------------------------------------------
-Jira Assets API uses Basic Auth: email:api_token encoded in Base64.
+--------------------------------------------------------------------------------
+TABLE: dbo.Node
+PURPOSE: Registry of all data sources and destinations associated to a job.
+         A node is any table, file, API, or storage location a job reads from
+         or writes to. Scoped to the job -- one row per node per job.
+--------------------------------------------------------------------------------
 
-  Base64("your-email@domain.com:your-api-token")
-
-Generate this in PowerShell:
-  [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("email@domain.com:api-token"))
-
-Store this in an Azure Key Vault secret or Logic App parameter.
-
-
-STEP 3: ADD AN HTTP ACTION IN LOGIC APP
-----------------------------------------
-In your Logic App designer, add an HTTP action with:
-
-  Method  : GET (or POST)
-  URI     : https://api.atlassian.com/jsm/assets/workspace/{workspaceId}/v1/object/aql
-  Headers :
-    {
-      "Authorization": "Basic <your-base64-encoded-credentials>",
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    }
+    node_id              INT IDENTITY       -- surrogate primary key, auto-incremented
+    job_id               INT                -- FK to dbo.Job; which job owns this node
+    node_name            VARCHAR(255)       -- name of the table, file, API endpoint, etc.
+    node_type            VARCHAR(100)       -- role of this node in the job: 'source',
+                                           --   'destination', or 'lookup'
+    node_source_type     VARCHAR(100)       -- technology/platform of the node: 'mssql',
+                                           --   'blob_storage', 'api', 'csv', 'sharepoint', etc.
+    node_schema          VARCHAR(100)       -- database schema if applicable e.g. 'dbo'
+                                           --   NULL for non-database nodes
+    node_database        VARCHAR(255)       -- database or storage account name if applicable
+                                           --   NULL for non-database nodes
+    node_description     VARCHAR(1000)      -- what this node represents in plain language
+    is_active            BIT                -- 0 = no longer used, 1 = currently in use
+    created_date         DATETIME           -- when this record was first inserted
+    modified_date        DATETIME           -- when this record was last updated
 
 
-STEP 4: FIND YOUR WORKSPACE ID
---------------------------------
-Call this endpoint first to get your workspaceId:
+--------------------------------------------------------------------------------
+TABLE: dbo.Lineage
+PURPOSE: Append-only log of every source-to-destination data movement that occurs
+         during a job run. This is the actual lineage -- join to dbo.Job and
+         dbo.Node to trace where data came from and where it went.
+         Multiple rows are expected per job run (one per source/target pair).
+         Use run_id to group all rows belonging to the same execution of a job.
+--------------------------------------------------------------------------------
 
-  GET https://api.atlassian.com/jsm/assets/workspace
-
-The response returns a list of workspaces — grab the workspaceId value.
-
-
-STEP 5: COMMON ASSETS API CALLS
----------------------------------
-Search objects with AQL (Assets Query Language):
-  POST https://api.atlassian.com/jsm/assets/workspace/{workspaceId}/v1/object/aql
-  Body:
-    {
-      "qlQuery": "objectType = \"Server\" AND status = \"Active\""
-    }
-
-Get a specific object:
-  GET https://api.atlassian.com/jsm/assets/workspace/{workspaceId}/v1/object/{objectId}
-
-Get object types:
-  GET https://api.atlassian.com/jsm/assets/workspace/{workspaceId}/v1/objecttype/all
-
-
-STEP 6: PARSE THE RESPONSE
-----------------------------
-After the HTTP action, add a Parse JSON action:
-  - Content : @body('HTTP')
-  - Schema  : Generate from a sample response payload
-
-Then use the parsed fields in subsequent Logic App steps.
+    lineage_id           INT IDENTITY       -- surrogate primary key, auto-incremented
+    run_id               UNIQUEIDENTIFIER   -- groups all log rows for a single job execution;
+                                           --   generated once at job start (e.g. uuid.uuid4())
+                                           --   and passed to every row logged during that run
+    job_id               INT                -- FK to dbo.Job; which job produced this row
+    source_node_id       INT                -- FK to dbo.Node; where data was read from
+    target_node_id       INT                -- FK to dbo.Node; where data was written to
+    status               VARCHAR(50)        -- outcome of this specific movement:
+                                           --   'started', 'completed', 'failed'
+    rows_read            INT                -- number of rows read from the source node
+                                           --   NULL if not applicable or not yet known
+    rows_written         INT                -- number of rows written to the target node
+                                           --   NULL if not applicable or not yet known
+    error_message        VARCHAR(MAX)       -- populated on failure; NULL if successful
+    started_at           DATETIME           -- when this source-to-target movement began
+    completed_at         DATETIME           -- when this source-to-target movement finished
+                                           --   NULL if still in progress or failed before completion
+    duration_seconds     INT                -- elapsed time logged explicitly at completion
+                                           --   avoids recalculating from started_at/completed_at
+    created_date         DATETIME           -- when this log row was inserted
 
 
-STEP 7: HANDLE PAGINATION
----------------------------
-Assets API returns paginated results. Add an Until loop:
+================================================================================
+RELATIONSHIPS
+================================================================================
 
-  Until: @equals(body('HTTP')?['isLast'], true)
+    dbo.Job
+        └── dbo.Node       (dbo.Node.job_id           -> dbo.Job.job_id)
+        └── dbo.Lineage    (dbo.Lineage.job_id         -> dbo.Job.job_id)
+                └── source trace  (dbo.Lineage.source_node_id -> dbo.Node.node_id)
+                └── target trace  (dbo.Lineage.target_node_id -> dbo.Node.node_id)
 
-Inside the loop, increment the startAt query parameter:
-  ?startAt=@{variables('offset')}&maxResults=50
 
+================================================================================
+COMMON QUERIES
+================================================================================
 
-TIPS
-----
-- Rate limits   : Atlassian enforces rate limits — add a Delay action if calling in bulk
-- Error handling: Wrap the HTTP action in a Scope with Configure run after set to handle failures
-- Managed Identity: If using Azure Key Vault for the token, grant the Logic App's managed
-                    identity access to the secret
+-- All runs for a specific job
+SELECT * FROM dbo.Lineage
+WHERE job_id = 1
+ORDER BY started_at DESC;
+
+-- All rows belonging to a single run
+SELECT * FROM dbo.Lineage
+WHERE run_id = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+
+-- Full lineage trace: every job that ever wrote to a specific table
+SELECT j.job_name, l.run_id, l.rows_written, l.started_at
+FROM dbo.Lineage l
+JOIN dbo.Job  j ON l.job_id        = j.job_id
+JOIN dbo.Node n ON l.target_node_id = n.node_id
+WHERE n.node_name = 'SalesFactTable'
+ORDER BY l.started_at DESC;
+
+-- All sources and targets for a specific job run
+SELECT
+    src.node_name   AS source,
+    tgt.node_name   AS target,
+    l.rows_read,
+    l.rows_written,
+    l.status
+FROM dbo.Lineage l
+JOIN dbo.Node src ON l.source_node_id = src.node_id
+JOIN dbo.Node tgt ON l.target_node_id = tgt.node_id
+WHERE l.run_id = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+
+================================================================================
