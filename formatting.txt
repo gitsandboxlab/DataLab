@@ -1,49 +1,33 @@
-graph TD
-    %% Define Nodes
-    subgraph Enterprise_Users [Company Users / Brains]
-        A1[<b>AI Agent A</b><br/>(Internal App)]
-        A2[<b>AI Agent B</b><br/>(Jira Bot)]
-        A3[<b>User C</b><br/>(Claude Desktop)]
-    end
+index=ldapsearch ObjectClass=user OR ObjectClass=computer
+| where isnotnull(servicePrincipalName)
+| mvexpand servicePrincipalName
+| rename servicePrincipalName AS spn, sAMAccountName AS account, userAccountControl AS uac
+| eval account_enabled = if(tonumber(uac) % 2 == 0, "yes", "no")
+| table account, spn, account_enabled, distinguishedName
 
-    subgraph Internal_Network [Data Engineering "Body" / VPC]
-        direction TB
-        L[<b>Load Balancer</b><br/>/ Gateway]
-        
-        subgraph Container_Cluster [Docker/K8s Cluster]
-            direction TB
-            B1(<b>MCP SQL Server Instance 1</b>)
-            B2(<b>MCP SQL Server Instance 2</b>)
-        end
-        
-        C[(<b>SQL Server</b><br/>Data Warehouse)]
-    end
 
-    %% Remote Communication
-    A1 -- "SSE/WebSockets (remote)" --> L
-    A2 -- "SSE/WebSockets" --> L
-    A3 -- "SSE/WebSockets" --> L
-    
-    L --> B1
-    L --> B2
-    
-    %% Database Connection
-    B1 --> C
-    B2 --> C
+index=wineventlogs (EventCode=4768 OR EventCode=4769)
+    Status=0x0
+    earliest=-90d
+| eval spn = coalesce(ServiceName, TargetUserName)
+| eval spn = lower(trim(spn))
+| stats max(_time) AS last_seen count AS ticket_count by spn, IpAddress
+| eval last_seen_human = strftime(last_seen, "%Y-%m-%d %H:%M:%S")
 
-    %% Styling
-    style Internal_Network fill:#f5f7fa,stroke:#2d3748,stroke-width:2px,rx:5,ry:5;
-    style Enterprise_Users fill:#ebf8ff,stroke:#3182ce,stroke-width:2px,rx:5,ry:5;
-    style Container_Cluster fill:#ebf8ff,stroke:#3182ce,stroke-width:2px,stroke-dasharray: 5 5,rx:5,ry:5;
-    
-    style A1 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
-    style A2 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
-    style A3 fill:#a3bffa,stroke:#1a365d,stroke-width:1px,rx:3,ry:3;
-    
-    style L fill:#48bb78,stroke:#1c4532,stroke-width:1px,color:white,rx:3,ry:3;
-    style B1 fill:#3182ce,stroke:#1a365d,stroke-width:2px,rx:5,ry:5;
-    style B2 fill:#3182ce,stroke:#1a365d,stroke-width:2px,rx:5,ry:5;
-    style C fill:#4a5568,stroke:#2d3748,stroke-width:2px,color:white,rx:5,ry:5;
 
-    linkStyle 0,1,2,3,4 stroke:#3182ce,stroke-width:2px;
-    linkStyle 5,6 stroke:#4a5568,stroke-width:2px,stroke-dasharray: 2 2;
+| inputlookup ldap_spns.csv
+| eval spn_lower = lower(trim(spn))
+
+| join type=left spn_lower
+    [search index=wineventlogs (EventCode=4768 OR EventCode=4769) Status=0x0 earliest=-90d
+     | eval spn_lower = lower(trim(coalesce(ServiceName, TargetUserName)))
+     | stats max(_time) AS last_seen count AS ticket_count by spn_lower]
+
+| eval status = case(
+    isnull(last_seen),          "dormant — never seen",
+    last_seen < relative_time(now(), "-90d@d"), "dormant — 90+ days",
+    1==1,                       "active")
+| eval last_seen_human = if(isnull(last_seen), "never", strftime(last_seen, "%Y-%m-%d"))
+| where status != "active"
+| table account, spn, account_enabled, status, last_seen_human, ticket_count, distinguishedName
+| sort - account_enabled, account
