@@ -31,3 +31,14 @@ index=wineventlogs (EventCode=4768 OR EventCode=4769)
 | where status != "active"
 | table account, spn, account_enabled, status, last_seen_human, ticket_count, distinguishedName
 | sort - account_enabled, account
+
+
+| ldapsearch search="(&(objectClass=user)(servicePrincipalName=*)(!(sAMAccountName=*$)))"
+    attrs="sAMAccountName,servicePrincipalName,userAccountControl,distinguishedName,description"
+| eval account_enabled = if(tonumber(userAccountControl) % 2 == 0, "yes", "no")
+| mvexpand servicePrincipalName
+| rename servicePrincipalName AS spn,
+         sAMAccountName AS account
+| where NOT match(spn, "\$$")
+| where NOT match(account, "^krbtgt")
+| table account, spn, account_enabled, distinguishedName, description
