@@ -1,74 +1,32 @@
-"""
-model_runner.py
-Model runner. Call run_model() from your flow scripts.
-"""
+CREATE TABLE fact_goals_ytd_snap (
 
-import json
-import logging
+    snap_key                BIGINT          NOT NULL,
 
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
+    -- Grain
+    date_key                INT             NOT NULL,   -- Today's date (the snapshot date)
+    employee_key            INT             NOT NULL,
+    branch_key              INT             NOT NULL,
+    product_key             INT             NOT NULL,
+    metric_key              INT             NOT NULL,
+    goal_level_cd           VARCHAR(10)     NOT NULL,
+    goal_version_cd         VARCHAR(20)     NOT NULL,
 
-from lib.validation import run_validations
+    -- Annual reference
+    annual_goal_amount      DECIMAL(18,2),
+    total_biz_days_in_year  INT,
 
-logger = logging.getLogger(__name__)
+    -- Cumulative YTD measures (the key difference)
+    biz_days_elapsed        INT,            -- How many biz days have passed YTD
+    ytd_goal_amount         DECIMAL(18,2),  -- Prorated goal through today
+    ytd_actual_amount       DECIMAL(18,2),  -- Cumulative actual through today
+    ytd_variance_amount     DECIMAL(18,2),  -- ytd_actual - ytd_goal
+    ytd_attainment_pct      DECIMAL(8,4),   -- ytd_actual / ytd_goal
 
+    -- Projection
+    projected_year_end      DECIMAL(18,2),  -- At current pace, full year estimate
 
-def run_model(
-    engine: Engine,
-    sp_config: list[dict] | str,
-    val_config: list[dict] | str,
-) -> tuple[bool, list[str]]:
-    """
-    Validates source data then executes stored procedures in order.
-    Returns early without running SPs if validation fails.
+    -- Audit
+    load_date               DATE            NOT NULL,
 
-    Args:
-        engine:     SQLAlchemy engine.
-        sp_config:  Ordered SP list or JSON string.
-                    Each entry: {"name": "usp_foo", "order": 1, "timeout": 300}
-        val_config: Validation check list or JSON string.
-                    Passed directly to run_validations().
-
-    Returns:
-        (success: bool, messages: list[str])
-    """
-    if isinstance(sp_config, str):
-        sp_config = json.loads(sp_config)
-    if isinstance(val_config, str):
-        val_config = json.loads(val_config)
-
-    # Validation gate
-    if not val_config:
-        logger.warning("No validation config provided — skipping validation.")
-        passed, val_messages = True, []
-    else:
-        passed, val_messages = run_validations(engine, val_config)
-
-    if not passed:
-        logger.warning("Validation failed. Existing data model preserved. SPs will not run.")
-        return False, val_messages
-
-    # Execute SPs in order
-    ordered = sorted(sp_config, key=lambda x: x["order"])
-    logger.info(f"Validation passed. Running {len(ordered)} stored procedure(s).")
-    sp_messages = []
-
-    for sp in ordered:
-        name = sp["name"]
-        timeout = sp.get("timeout", 300)
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"EXEC {name}"), execution_options={"timeout": timeout})
-            msg = f"[sp] ✓ {name}"
-            logger.info(msg)
-        except Exception as e:
-            msg = f"[sp] ✗ {name} — {e}"
-            logger.error(msg)
-            sp_messages.append(msg)
-            return False, val_messages + sp_messages
-
-        sp_messages.append(msg)
-
-    logger.info("Model build complete.")
-    return True, val_messages + sp_messages
+    CONSTRAINT pk_goals_ytd PRIMARY KEY (snap_key)
+);
