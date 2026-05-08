@@ -1,44 +1,303 @@
-index=ldapsearch ObjectClass=user OR ObjectClass=computer
-| where isnotnull(servicePrincipalName)
-| mvexpand servicePrincipalName
-| rename servicePrincipalName AS spn, sAMAccountName AS account, userAccountControl AS uac
-| eval account_enabled = if(tonumber(uac) % 2 == 0, "yes", "no")
-| table account, spn, account_enabled, distinguishedName
+================================================================================
+ FACT_GOALS_YTD_SNAP — FIELD DEFINITIONS & SAMPLE DATA
+ Banking Scorecard | Deposit & Lending Goals
+================================================================================
 
 
-index=wineventlogs (EventCode=4768 OR EventCode=4769)
-    Status=0x0
-    earliest=-90d
-| eval spn = coalesce(ServiceName, TargetUserName)
-| eval spn = lower(trim(spn))
-| stats max(_time) AS last_seen count AS ticket_count by spn, IpAddress
-| eval last_seen_human = strftime(last_seen, "%Y-%m-%d %H:%M:%S")
+--------------------------------------------------------------------------------
+ SECTION 1: FIELD DEFINITIONS
+--------------------------------------------------------------------------------
+
+TABLE: fact_goals_ytd_snap
+GRAIN: One row per RM x product x metric x day (cumulative YTD snapshot)
+PURPOSE: Tracks each RM's year-to-date goal attainment as of each business day.
+         Each night the ETL appends a new snapshot row so trend history is preserved.
 
 
-| inputlookup ldap_spns.csv
-| eval spn_lower = lower(trim(spn))
+── KEYS & GRAIN ────────────────────────────────────────────────────────────────
 
-| join type=left spn_lower
-    [search index=wineventlogs (EventCode=4768 OR EventCode=4769) Status=0x0 earliest=-90d
-     | eval spn_lower = lower(trim(coalesce(ServiceName, TargetUserName)))
-     | stats max(_time) AS last_seen count AS ticket_count by spn_lower]
+Field                   Type            Definition
+─────────────────────── ─────────────── ────────────────────────────────────────
+snap_key                BIGINT (PK)     Surrogate primary key. Unique identifier
+                                        for every row in the table.
 
-| eval status = case(
-    isnull(last_seen),          "dormant — never seen",
-    last_seen < relative_time(now(), "-90d@d"), "dormant — 90+ days",
-    1==1,                       "active")
-| eval last_seen_human = if(isnull(last_seen), "never", strftime(last_seen, "%Y-%m-%d"))
-| where status != "active"
-| table account, spn, account_enabled, status, last_seen_human, ticket_count, distinguishedName
-| sort - account_enabled, account
+date_key                INT (FK)        The snapshot date in YYYYMMDD format.
+                                        Foreign key to dim_date. A new row is
+                                        written for each business day.
+
+employee_key            INT (FK)        Foreign key to dim_employee. Identifies
+                                        which RM this snapshot belongs to.
+
+branch_key              INT (FK)        Foreign key to dim_branch. The branch the
+                                        RM was assigned to at snapshot time. Uses
+                                        SCD Type 2 so branch transfers are handled
+                                        correctly in history.
+
+product_key             INT (FK)        Foreign key to dim_product. The product
+                                        being tracked (e.g. HELOC, auto loan,
+                                        savings account).
+
+metric_key              INT (FK)        Foreign key to dim_metric. The type of
+                                        measurement (e.g. originations $,
+                                        balance $, new accounts #).
+
+goal_level_cd           VARCHAR(10)     Indicates the organizational level the
+                                        goal is assigned to.
+                                        Values: 'RM' or 'BRANCH'
+                                        Use to avoid double-counting when mixing
+                                        RM-level and branch-level goals in reports.
+
+goal_version_cd         VARCHAR(20)     Identifies which annual plan this goal
+                                        came from. Allows multiple years to
+                                        coexist in the same table.
+                                        Example: 'FY2025_BUDGET', 'FY2024_BUDGET'
 
 
-| ldapsearch search="(&(objectClass=user)(servicePrincipalName=*)(!(sAMAccountName=*$)))"
-    attrs="sAMAccountName,servicePrincipalName,userAccountControl,distinguishedName,description"
-| eval account_enabled = if(tonumber(userAccountControl) % 2 == 0, "yes", "no")
-| mvexpand servicePrincipalName
-| rename servicePrincipalName AS spn,
-         sAMAccountName AS account
-| where NOT match(spn, "\$$")
-| where NOT match(account, "^krbtgt")
-| table account, spn, account_enabled, distinguishedName, description
+── ANNUAL GOAL REFERENCE ───────────────────────────────────────────────────────
+
+Field                   Type            Definition
+─────────────────────── ─────────────── ────────────────────────────────────────
+annual_goal_amount      DECIMAL(18,2)   The original full-year goal as set by
+                                        Finance or management at the start of the
+                                        year. This number never changes once the
+                                        year begins. Preserved for auditability.
+
+total_biz_days_in_year  INT             Total number of business days in the
+                                        fiscal year. Typically 261. Used as the
+                                        denominator when prorating the annual goal
+                                        to a YTD amount.
+
+
+── CUMULATIVE YTD MEASURES ─────────────────────────────────────────────────────
+
+Field                   Type            Definition
+─────────────────────── ─────────────── ────────────────────────────────────────
+biz_days_elapsed        INT             How many business days have passed from
+                                        Jan 1 through the snapshot date. Drives
+                                        both the prorated YTD goal and the
+                                        projected year-end calculation.
+                                        Source: dim_date.business_days_elapsed
+
+ytd_goal_amount         DECIMAL(18,2)   The prorated portion of the annual goal
+                                        through today's snapshot date.
+                                        Formula:
+                                          annual_goal_amount
+                                          / total_biz_days_in_year
+                                          * biz_days_elapsed
+                                        Represents "what you should have done
+                                        by now if performance were perfectly
+                                        linear across the year."
+
+ytd_actual_amount       DECIMAL(18,2)   Cumulative actual performance from Jan 1
+                                        through the snapshot date. This is the
+                                        sum of all daily actuals for this
+                                        RM / product / metric combination pulled
+                                        from the source system (LOS, core banking,
+                                        etc.).
+
+ytd_variance_amount     DECIMAL(18,2)   Dollar or unit difference between actual
+                                        and goal year to date.
+                                        Formula: ytd_actual_amount
+                                                 - ytd_goal_amount
+                                        Positive = ahead of goal
+                                        Negative = behind goal
+
+ytd_attainment_pct      DECIMAL(8,4)    Percentage of the prorated YTD goal that
+                                        has been achieved. This is the primary
+                                        scorecard metric.
+                                        Formula: ytd_actual_amount
+                                                 / ytd_goal_amount
+                                        1.0000 = exactly on pace (100%)
+                                        > 1.0  = ahead of goal
+                                        < 1.0  = behind goal
+                                        Note: always divide the period sums —
+                                        never sum the daily attainment_pct values.
+
+projected_year_end      DECIMAL(18,2)   Full-year estimate based on the current
+                                        run rate. Answers the question: "If the
+                                        RM keeps performing at this pace, what
+                                        will they close by Dec 31?"
+                                        Formula: (ytd_actual_amount
+                                                  / biz_days_elapsed)
+                                                 * total_biz_days_in_year
+
+
+── AUDIT ───────────────────────────────────────────────────────────────────────
+
+Field                   Type            Definition
+─────────────────────── ─────────────── ────────────────────────────────────────
+load_date               DATE            The date this row was written by the ETL
+                                        process. Should match the snapshot date
+                                        for daily loads. Used for troubleshooting
+                                        and pipeline auditing.
+
+
+================================================================================
+ SECTION 2: SAMPLE DATA
+================================================================================
+
+Snapshot date : May 7, 2025
+Business days elapsed : 87 of 261
+2 RMs, 3 metrics each (originations $, balance $, new accounts #)
+
+Attainment thresholds used in this example:
+  >= 100%   On pace or ahead of goal
+  85-99%    Slightly behind — watch closely
+  < 85%     Significantly behind — action required
+
+
+── J. SMITH | Branch 001 ───────────────────────────────────────────────────────
+
+snap_key              : 1001
+date_key              : 20250507
+employee_key          : 101  (J. Smith)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : HELOC
+  Metric   : Originations $
+  ───────────────────────────────────────────────
+  annual_goal_amount      :   $6,000,000.00
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :   $2,000,000.00    (6,000,000 / 261 * 87)
+  ytd_actual_amount       :   $2,210,000.00
+  ytd_variance_amount     :    +$210,000.00
+  ytd_attainment_pct      :   1.1050           (110.5% — AHEAD OF GOAL)
+  projected_year_end      :   $6,630,000.00
+
+
+snap_key              : 1002
+date_key              : 20250507
+employee_key          : 101  (J. Smith)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : Savings Account
+  Metric   : Balance $
+  ───────────────────────────────────────────────
+  annual_goal_amount      :   $1,200,000.00
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :     $400,000.00
+  ytd_actual_amount       :     $342,000.00
+  ytd_variance_amount     :     -$58,000.00
+  ytd_attainment_pct      :   0.8550           (85.5% — SLIGHTLY BEHIND)
+  projected_year_end      :   $1,026,000.00
+
+
+snap_key              : 1003
+date_key              : 20250507
+employee_key          : 101  (J. Smith)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : HELOC
+  Metric   : New accounts #
+  ───────────────────────────────────────────────
+  annual_goal_amount      :   120
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :   40
+  ytd_actual_amount       :   38
+  ytd_variance_amount     :   -2
+  ytd_attainment_pct      :   0.9500           (95.0% — SLIGHTLY BEHIND)
+  projected_year_end      :   114
+
+
+── M. JONES | Branch 001 ───────────────────────────────────────────────────────
+
+snap_key              : 1004
+date_key              : 20250507
+employee_key          : 102  (M. Jones)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : Auto Loan
+  Metric   : Originations $
+  ───────────────────────────────────────────────
+  annual_goal_amount      :   $4,000,000.00
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :   $1,333,333.00
+  ytd_actual_amount       :     $980,000.00
+  ytd_variance_amount     :    -$353,333.00
+  ytd_attainment_pct      :   0.7350           (73.5% — SIGNIFICANTLY BEHIND)
+  projected_year_end      :   $2,940,000.00
+
+
+snap_key              : 1005
+date_key              : 20250507
+employee_key          : 102  (M. Jones)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : Savings Account
+  Metric   : Balance $
+  ───────────────────────────────────────────────
+  annual_goal_amount      :     $800,000.00
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :     $266,667.00
+  ytd_actual_amount       :     $291,000.00
+  ytd_variance_amount     :     +$24,333.00
+  ytd_attainment_pct      :   1.0912           (109.1% — AHEAD OF GOAL)
+  projected_year_end      :     $873,000.00
+
+
+snap_key              : 1006
+date_key              : 20250507
+employee_key          : 102  (M. Jones)
+branch_key            : 10   (Branch 001)
+goal_level_cd         : RM
+goal_version_cd       : FY2025_BUDGET
+load_date             : 2025-05-07
+
+  Product  : Auto Loan
+  Metric   : New accounts #
+  ───────────────────────────────────────────────
+  annual_goal_amount      :   200
+  total_biz_days_in_year  :   261
+  biz_days_elapsed        :   87
+  ytd_goal_amount         :   67
+  ytd_actual_amount       :   51
+  ytd_variance_amount     :   -16
+  ytd_attainment_pct      :   0.7612           (76.1% — SIGNIFICANTLY BEHIND)
+  projected_year_end      :   153
+
+
+================================================================================
+ KEY OBSERVATIONS FROM SAMPLE DATA
+================================================================================
+
+1. J. Smith — mixed performance
+   HELOC originations are strong at 110.5% but savings balance lags at 85.5%.
+   Without tracking both metrics you would only see half the picture.
+
+2. M. Jones — projected year-end gap is the critical number
+   Auto loan originations are at 73.5% attainment. Projected year end of
+   $2.94M against a $4M goal means a $1.06M gap. Knowing this in May gives
+   management time to course correct before Q4.
+
+3. Dollar attainment and account count can diverge
+   J. Smith is at 110.5% on HELOC dollars but only 95% on account count —
+   his deals are larger than average. M. Jones is the opposite — smaller
+   deals, fewer accounts. Both dimensions are needed to manage performance.
+
+4. ytd_attainment_pct is always computed as SUM(actual) / SUM(goal)
+   Never average the daily attainment values. Always divide the cumulative
+   period totals to get a meaningful attainment percentage.
+
+================================================================================
+ END OF DOCUMENT
+================================================================================
