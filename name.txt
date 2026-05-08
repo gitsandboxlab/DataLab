@@ -1,0 +1,141 @@
+================================================================================
+ DIM_METRIC — FIELD DEFINITIONS
+================================================================================
+
+TABLE: dim_metric
+PURPOSE: Defines every metric that can be assigned as a goal and tracked on
+         the banking scorecard. Controls ETL routing, display formatting,
+         and which organizational levels a goal can be set at.
+
+
+── KEYS ────────────────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+metric_key              INT (PK)          Surrogate primary key. Used as the
+                                          foreign key in fact_goals_ytd_snap.
+
+metric_id               VARCHAR(20)       Business natural key. Stable code used
+                                          in ETL config and application logic.
+                                          Example: ORIG_AMT, BAL_DEP, NEW_ACCT
+
+
+── DESCRIPTION ─────────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+metric_name             VARCHAR(100)      Full display name used in reports and
+                                          scorecards.
+                                          Example: "Loan Originations $"
+
+metric_short_name       VARCHAR(30)       Abbreviated name for dashboard column
+                                          headers.
+                                          Example: "Orig $", "Bal $"
+
+metric_description      VARCHAR(500)      Plain-language explanation of what this
+                                          metric measures and how it is calculated.
+
+
+── CLASSIFICATION ───────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+metric_category_cd      VARCHAR(20)       High-level business category.
+                                          Values: DEPOSIT, LENDING, ACTIVITY
+
+metric_type_cd          VARCHAR(20)       Whether this is a flow or stock metric.
+                                          FLOW   = cumulative sum of events YTD
+                                                   (originations, transactions)
+                                          STOCK  = point-in-time balance as of
+                                                   snapshot date (deposit balance)
+
+unit_cd                 VARCHAR(10)       Unit of measure. Drives number formatting
+                                          in reports.
+                                          Values: DOLLARS, COUNT, PCT
+
+polarity_cd             VARCHAR(10)       Whether higher or lower is better.
+                                          Used to color attainment indicators.
+                                          Values: HIGH_GOOD, LOW_GOOD
+
+
+── ETL ROUTING ──────────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+source_table_cd         VARCHAR(30)       Which actuals fact table feeds this
+                                          metric. ETL reads this field at runtime
+                                          to route the aggregation query.
+                                          Values: FACT_SALE, FACT_BALANCE,
+                                                  FACT_TRANSACTION
+
+source_measure_cd       VARCHAR(50)       The field and aggregation to apply from
+                                          the source table.
+                                          Example: SUM(origination_amount)
+                                                   SUM(closing_balance)
+                                                   SUM(account_count)
+
+
+── GOAL ASSIGNMENT ──────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+is_rm_goal_flag         CHAR(1)           Y if this metric can be assigned as an
+                                          RM-level goal. N if branch-level only.
+
+is_branch_goal_flag     CHAR(1)           Y if this metric can be assigned as a
+                                          branch-level goal.
+
+goal_level_default_cd   VARCHAR(10)       Default assignment level when a goal is
+                                          loaded into the system.
+                                          Values: RM, BRANCH
+
+
+── DISPLAY & FORMATTING ─────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+format_mask             VARCHAR(30)       Display format string for BI tools.
+                                          Example: $#,##0 for dollars
+                                                   #,##0  for counts
+                                                   0.0%   for percentages
+
+decimal_places          INT               Number of decimal places to display.
+                                          0 for counts, 2 for dollars,
+                                          4 for attainment percentages.
+
+sort_order              INT               Display sequence on the scorecard.
+                                          Lower numbers appear first.
+
+
+── AUDIT ────────────────────────────────────────────────────────────────────────
+
+Field                   Type              Definition
+─────────────────────── ───────────────── ──────────────────────────────────────
+is_active_flag          CHAR(1)           Y if metric is currently in use.
+                                          N to retire without deleting history.
+
+effective_date          DATE              Date this metric definition became active.
+
+expiration_date         DATE              Date this metric was retired.
+                                          NULL if still active.
+
+
+================================================================================
+ DIM_METRIC — SAMPLE DATA (CSV)
+================================================================================
+
+metric_key,metric_id,metric_name,metric_short_name,metric_description,metric_category_cd,metric_type_cd,unit_cd,polarity_cd,source_table_cd,source_measure_cd,is_rm_goal_flag,is_branch_goal_flag,goal_level_default_cd,format_mask,decimal_places,sort_order,is_active_flag,effective_date,expiration_date
+1,ORIG_AMT,Loan originations $,Orig $,Total dollar amount of loans originated YTD from the loan origination system,LENDING,FLOW,DOLLARS,HIGH_GOOD,FACT_SALE,SUM(origination_amount),Y,Y,RM,$#,2,1,Y,2025-01-01,
+2,BAL_DEP,Deposit balance $,Dep Bal $,Current deposit balance as of the snapshot date across all deposit accounts assigned to the RM,DEPOSIT,STOCK,DOLLARS,HIGH_GOOD,FACT_BALANCE,SUM(closing_balance),Y,Y,RM,$#,2,2,Y,2025-01-01,
+3,NEW_ACCT,New accounts #,New Accts,Count of new deposit and lending accounts opened YTD,DEPOSIT,FLOW,COUNT,HIGH_GOOD,FACT_SALE,SUM(account_count),Y,Y,RM,#,0,3,Y,2025-01-01,
+4,BAL_DEP_BR,Total deposit balance $,Total Dep Bal,Total deposit balance across all accounts at the branch level. Branch-level goal only,DEPOSIT,STOCK,DOLLARS,HIGH_GOOD,FACT_BALANCE,SUM(closing_balance),N,Y,BRANCH,$#,2,4,Y,2025-01-01,
+5,TXN_VOL,Transaction volume $,Txn Vol,Total dollar volume of all debit and credit transactions YTD,ACTIVITY,FLOW,DOLLARS,HIGH_GOOD,FACT_TRANSACTION,SUM(ABS(transaction_amount)),Y,Y,RM,$#,2,5,Y,2025-01-01,
+6,HELOC_ORIG,HELOC originations $,HELOC Orig,Dollar amount of home equity line of credit originations YTD,LENDING,FLOW,DOLLARS,HIGH_GOOD,FACT_SALE,SUM(origination_amount),Y,Y,RM,$#,2,6,Y,2025-01-01,
+7,AUTO_ORIG,Auto loan originations $,Auto Orig,Dollar amount of auto loan originations YTD,LENDING,FLOW,DOLLARS,HIGH_GOOD,FACT_SALE,SUM(origination_amount),Y,Y,RM,$#,2,7,Y,2025-01-01,
+8,SAV_BAL,Savings balance $,Sav Bal,Current savings account balance as of the snapshot date,DEPOSIT,STOCK,DOLLARS,HIGH_GOOD,FACT_BALANCE,SUM(closing_balance),Y,Y,RM,$#,2,8,Y,2025-01-01,
+9,FEE_INC,Fee income $,Fee Inc,Total fee income generated from originations and transactions YTD,ACTIVITY,FLOW,DOLLARS,HIGH_GOOD,FACT_SALE,SUM(fee_amount),Y,Y,RM,$#,2,9,Y,2025-01-01,
+10,CD_ORIG,CD originations $,CD Orig,Dollar amount of certificate of deposit originations YTD,DEPOSIT,FLOW,DOLLARS,HIGH_GOOD,FACT_SALE,SUM(origination_amount),Y,Y,RM,$#,2,10,Y,2025-01-01,
+
+================================================================================
+ END OF DOCUMENT
+================================================================================
