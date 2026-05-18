@@ -1,17 +1,99 @@
-Field_Name	Data_Type	Nullable	Definition
-Resp_Key	INT PK	No	Surrogate primary key. Integer assigned by the system for each row including each SCD Type 2 version. Unique across all rows and all versions. Used as the foreign key in fact tables and bridge tables. A single resp entity may have multiple rows each with a different Resp_Key if it has transferred.
-Resp_Id	VARCHAR(20)	No	Business natural key. The stable permanent identifier for this responsibility entity sourced from the internal system. Examples: BR-4421 for branches, EMP-8821 for PBs and RMs. Synthetic for departments e.g. DEPT-001. Remains the same across all SCD versions — only Resp_Key changes between versions. Use this to link all historical versions of the same entity.
-Resp_Name	VARCHAR(100)	No	Full display name of this responsibility entity. Examples: Mesa Branch, Mortgage Department, J. Smith. Used in all scorecard reports and dashboards as the primary label. May change over time — for example an RM legally changes their name — in which case a new SCD version row is created.
-Resp_Type_Cd	VARCHAR(20)	No	Classifies what type of responsibility entity this row represents. Values: DEPARTMENT for top-level groups such as Community Banking or Mortgage, BRANCH for physical retail branches, PB for private bankers within a branch, RM for relationship managers within a department, UNASSIGNED for the default catch-all member used for charged off and unattributed accounts.
-Resp_Description	VARCHAR(500)	Yes	Plain language description of this responsibility entity. Describes the location and customer base for branches, the line of business and product focus for departments, and the specialisation and role for PBs and RMs. NULL if no description has been entered. Does not trigger a new SCD version if updated.
-Parent_Resp_Id	VARCHAR(20)	Yes	Self-referencing foreign key pointing to the Resp_Id of the parent entity. NULL for DEPARTMENT and UNASSIGNED rows as they sit at the top of their hierarchies. Populated for BRANCH, PB, and RM rows. When an RM or PB transfers this field changes and a new SCD Type 2 version row is created to preserve the history of the previous parent assignment.
-Level1	VARCHAR(100)	Yes	Flattened hierarchy level 1 — always the Department name for this entity. Populated for all rows except UNASSIGNED. Used by BI tools for drill-down visualisations without requiring a self-join. Recalculated by the ETL whenever a new SCD version is created.
-Level2	VARCHAR(100)	Yes	Flattened hierarchy level 2 — the Branch name for the branch hierarchy or the RM name for the department hierarchy. NULL for DEPARTMENT rows. Recalculated by the ETL whenever a new SCD version is created.
-Level3	VARCHAR(100)	Yes	Flattened hierarchy level 3 — the PB name for the branch hierarchy only. NULL for all department hierarchy rows and for BRANCH rows. Recalculated by the ETL whenever a new SCD version is created.
-Resp_Level_Num	INT	No	Numeric depth of this row in its hierarchy. DEPARTMENT = 1, BRANCH = 2, PB = 3, RM = 2. Used by BI tools to filter to a specific level without checking Resp_Type_Cd. For example Resp_Level_Num = 2 returns all branches and all RMs in one query.
-Source_System_Id	VARCHAR(20)	Yes	The raw identifier from the internal source system. Matches Resp_Id for branches, PBs, and RMs where a real system ID exists. NULL for DEPARTMENT rows where the ID is synthetic and UNASSIGNED rows.
-Is_Synthetic_Id	CHAR(1)	No	Y if Resp_Id was created synthetically by the data team because no source system ID exists at this level. N if Resp_Id comes directly from the internal source system. DEPARTMENT and UNASSIGNED rows are always Y. BRANCH, PB, and RM rows are always N.
-Effective_Date	DATE	No	The date this version of the row became active. For the first version this is the date the entity was created or first loaded. For subsequent versions this is the date the transfer or name change took effect. Used by the ETL to join Dim_Resp to historical fact rows at the correct point in time.
-Expiration_Date	DATE	Yes	The date this version of the row stopped being active — the day before the new version took effect. NULL if this is the current active version. When an RM transfers on July 1st the old row gets Expiration_Date = June 30th and a new row is inserted with Effective_Date = July 1st.
-Is_Current_Flag	CHAR(1)	No	Y if this is the current active version of this entity. N if this is a historical version that has been superseded by a newer row. Only one row per Resp_Id should have Is_Current_Flag = Y at any point in time. Used by ETL and reports to quickly filter to current state without date comparisons.
-Is_Active_Flag	CHAR(1)	No	Y if this responsibility entity is currently active and valid for goal assignment and scorecard reporting. N if the entity has been retired — for example a branch that has closed or an RM who has left. Differs from Is_Current_Flag — an entity can be current (latest version) but inactive (retired). ETL and goal assignment screens filter to Is_Active_Flag = Y.
+CREATE PROCEDURE usp_Load_FactGoalSnap_CustomerCount
+    @Snap_Date      DATE,
+    @Goal_Version   VARCHAR(20)
+AS
+BEGIN
+
+    SET NOCOUNT ON;
+
+    -- ── Step 1: get business days from Dim_Date ──────────────
+    DECLARE @Biz_Days_Elapsed   INT;
+    DECLARE @Date_Key           INT;
+    DECLARE @Total_Biz_Days     INT;
+
+    SELECT
+        @Date_Key         = Date_Key,
+        @Biz_Days_Elapsed = Biz_Days_Elapsed
+    FROM Dim_Date
+    WHERE Full_Date = @Snap_Date;
+
+    SELECT
+        @Total_Biz_Days = COUNT(*)
+    FROM Dim_Date
+    WHERE Fiscal_Year          = YEAR(@Snap_Date)
+    AND   Is_Business_Day_Flag = 'Y';
+
+    -- ── Step 2: aggregate actuals from Dim_Customer ──────────
+    WITH Customer_Actuals AS (
+        SELECT
+            bar.Resp_Code,
+            COUNT(DISTINCT dc.Customer_Key)     AS Ytd_Actual_Value
+        FROM Dim_Customer               dc
+        JOIN Bridge_Account_Customer    bac ON  bac.Customer_Key    = dc.Customer_Key
+                                            AND bac.Is_Current_Flag = 'Y'
+        JOIN Dim_Account                da  ON  da.Account_Key      = bac.Account_Key
+        JOIN Bridge_Account_Resp        bar ON  bar.Account_Key     = da.Account_Key
+                                            AND bar.Is_Current_Flag = 'Y'
+        WHERE YEAR(dc.Relationship_Start_Date) = YEAR(@Snap_Date)
+        GROUP BY bar.Resp_Code
+    )
+
+    -- ── Step 3: join to FactGoalAssign and insert ────────────
+    INSERT INTO FactGoalSnap (
+        Date_Key,
+        Resp_Code,
+        Goal_Key,
+        Goal_Version,
+        Annual_Goal_Value,
+        Biz_Days_Elapsed,
+        Ytd_Goal_Value,
+        Ytd_Actual_Value,
+        Ytd_Variance_Value,
+        Projected_Year_End,
+        Load_Date
+    )
+    SELECT
+        @Date_Key,
+        fga.Resp_Code,
+        fga.Goal_Key,
+        fga.Goal_Version,
+        fga.Goal_Value                              AS Annual_Goal_Value,
+        @Biz_Days_Elapsed                           AS Biz_Days_Elapsed,
+
+        -- Prorated YTD goal
+        fga.Goal_Value
+            / @Total_Biz_Days
+            * @Biz_Days_Elapsed                     AS Ytd_Goal_Value,
+
+        -- Actual customer count YTD
+        ISNULL(ca.Ytd_Actual_Value, 0)              AS Ytd_Actual_Value,
+
+        -- Variance: actual - prorated goal
+        ISNULL(ca.Ytd_Actual_Value, 0)
+            - (fga.Goal_Value
+               / @Total_Biz_Days
+               * @Biz_Days_Elapsed)                 AS Ytd_Variance_Value,
+
+        -- Projected year end run rate
+        CASE
+            WHEN @Biz_Days_Elapsed = 0 THEN NULL
+            ELSE (ISNULL(ca.Ytd_Actual_Value, 0)
+                  / @Biz_Days_Elapsed)
+                  * @Total_Biz_Days
+        END                                         AS Projected_Year_End,
+
+        @Snap_Date                                  AS Load_Date
+
+    FROM FactGoalAssign             fga
+    LEFT JOIN Customer_Actuals      ca  ON  ca.Resp_Code  = fga.Resp_Code
+    WHERE fga.Goal_Key      = 'G015'        -- New Customer Count
+    AND   fga.Goal_Version  = @Goal_Version
+    AND   fga.Is_Enabled    = 'Y';
+
+END;
+GO
+
+-- ── Execute ───────────────────────────────────────────────────
+EXEC usp_Load_FactGoalSnap_CustomerCount
+    @Snap_Date    = '2026-05-07',
+    @Goal_Version = 'FY2026';
