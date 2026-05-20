@@ -1,32 +1,68 @@
-CREATE TABLE fact_goals_ytd_snap (
+import pyodbc
 
-    snap_key                BIGINT          NOT NULL,
+def copy_view_to_table(
+    src_engine,
+    dest_engine,
+    src_view: str,
+    dest_table: str,
+    truncate: bool = False,
+    chunk_size: int = 50000
+):
+    """
+    Copy data from SQL Server view to SQL Server table using SQLAlchemy engines + pyodbc.
 
-    -- Grain
-    date_key                INT             NOT NULL,   -- Today's date (the snapshot date)
-    employee_key            INT             NOT NULL,
-    branch_key              INT             NOT NULL,
-    product_key             INT             NOT NULL,
-    metric_key              INT             NOT NULL,
-    goal_level_cd           VARCHAR(10)     NOT NULL,
-    goal_version_cd         VARCHAR(20)     NOT NULL,
+    Parameters:
+        src_engine: SQLAlchemy engine (source DB)
+        dest_engine: SQLAlchemy engine (target DB)
+        src_view: e.g. dbo.vw_Sales
+        dest_table: e.g. dbo.Sales
+        truncate: if True, truncates destination table first
+        chunk_size: number of rows per batch
+    """
 
-    -- Annual reference
-    annual_goal_amount      DECIMAL(18,2),
-    total_biz_days_in_year  INT,
+    # Get raw DBAPI connections from SQLAlchemy engines
+    src_conn = src_engine.raw_connection()
+    dest_conn = dest_engine.raw_connection()
 
-    -- Cumulative YTD measures (the key difference)
-    biz_days_elapsed        INT,            -- How many biz days have passed YTD
-    ytd_goal_amount         DECIMAL(18,2),  -- Prorated goal through today
-    ytd_actual_amount       DECIMAL(18,2),  -- Cumulative actual through today
-    ytd_variance_amount     DECIMAL(18,2),  -- ytd_actual - ytd_goal
-    ytd_attainment_pct      DECIMAL(8,4),   -- ytd_actual / ytd_goal
+    src_cursor = src_conn.cursor()
+    dest_cursor = dest_conn.cursor()
 
-    -- Projection
-    projected_year_end      DECIMAL(18,2),  -- At current pace, full year estimate
+    dest_cursor.fast_executemany = True
 
-    -- Audit
-    load_date               DATE            NOT NULL,
+    try:
+        # Optional truncate
+        if truncate:
+            dest_cursor.execute(f"TRUNCATE TABLE {dest_table}")
+            dest_conn.commit()
 
-    CONSTRAINT pk_goals_ytd PRIMARY KEY (snap_key)
-);
+        # Pull from source view
+        src_cursor.execute(f"SELECT * FROM {src_view}")
+
+        # Get column names
+        columns = [col[0] for col in src_cursor.description]
+
+        insert_sql = f"""
+            INSERT INTO {dest_table} ({",".join(columns)})
+            VALUES ({",".join(["?"] * len(columns))})
+        """
+
+        total = 0
+
+        while True:
+            batch = src_cursor.fetchmany(chunk_size)
+            if not batch:
+                break
+
+            dest_cursor.executemany(insert_sql, batch)
+            dest_conn.commit()
+
+            total += len(batch)
+            print(f"Inserted {total} rows into {dest_table}")
+
+        print(f"DONE: {total} rows copied from {src_view} → {dest_table}")
+
+    finally:
+        src_cursor.close()
+        dest_cursor.close()
+        src_conn.close()
+        dest_conn.close()
