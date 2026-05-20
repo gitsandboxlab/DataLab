@@ -1,46 +1,14 @@
-================================================================================
- FACT_GOALS_YTD_SNAP — FIELD DEFINITIONS & SAMPLE DATA
- Banking Scorecard | Deposit & Lending Goals
-================================================================================
-
-
---------------------------------------------------------------------------------
- SECTION 1: FIELD DEFINITIONS
---------------------------------------------------------------------------------
-
-TABLE: fact_goals_ytd_snap
-GRAIN: One row per RM x product x metric x day (cumulative YTD snapshot)
-PURPOSE: Tracks each RM's year-to-date goal attainment as of each business day.
-         Each night the ETL appends a new snapshot row so trend history is preserved.
-
-
-── KEYS & GRAIN ────────────────────────────────────────────────────────────────
-
-Field                   Type            Definition
-─────────────────────── ─────────────── ────────────────────────────────────────
-snap_key                BIGINT (PK)     Surrogate primary key. Unique identifier
-                                        for every row in the table.
-
-date_key                INT (FK)        The snapshot date in YYYYMMDD format.
-                                        Foreign key to dim_date. A new row is
-                                        written for each business day.
-
-employee_key            INT (FK)        Foreign key to dim_employee. Identifies
-                                        which RM this snapshot belongs to.
-
-branch_key              INT (FK)        Foreign key to dim_branch. The branch the
-                                        RM was assigned to at snapshot time. Uses
-                                        SCD Type 2 so branch transfers are handled
-                                        correctly in history.
-
-product_key             INT (FK)        Foreign key to dim_product. The product
-                                        being tracked (e.g. HELOC, auto loan,
-                                        savings account).
-
-metric_key              INT (FK)        Foreign key to dim_metric. The type of
-                                        measurement (e.g. originations $,
-                                        balance $, new accounts #).
-
+Field_Name	Data_Type	Nullable	Definition
+Transaction_Key	INT PK	No	Surrogate primary key. Auto increment integer assigned by SQL Server using IDENTITY(1,1). Uniquely identifies each transaction row. Has no business meaning — exists solely to uniquely identify the row.
+Date_Key	INT FK	No	Foreign key to Dim_Date. The business date this transaction was posted. Used to scope transactions to a specific period for YTD aggregation in the ETL.
+Account_Key	INT FK	No	Foreign key to Dim_Account. The account this transaction occurred against. Used to join through Bridge_Account_Resp to attribute the transaction to the correct responsibility entity.
+Product_Key	INT FK	No	Foreign key to Dim_Product. The product type associated with the account this transaction occurred against. Allows filtering and grouping of transaction activity by product category.
+Transaction_Amount	DECIMAL(18,4)	No	The dollar amount of the transaction. Positive for credits — deposits, payments, draws. Negative for debits — withdrawals, fees, reversals. Use ABS() when summing volume regardless of direction.
+Transaction_Type_Cd	VARCHAR(20)	No	Classifies the type of transaction. Examples: DEPOSIT, WITHDRAWAL, PAYMENT, DRAW, TRANSFER, FEE, PAYOFF, REVERSAL. Used to filter specific activity types for goal metrics.
+Channel_Cd	VARCHAR(20)	Yes	The channel through which the transaction was initiated. Examples: BRANCH, MOBILE, ATM, ONLINE, WIRE, ACH. NULL if channel is not captured by the source system. Used for channel mix reporting.
+Source_System_Cd	VARCHAR(20)	No	Identifies which source system originated this transaction. Examples: CORE_BANKING, LOAN_SERVICING, PAYMENT_PROC. Combined with Source_Transaction_Id forms the natural key that prevents duplicate loads across ETL runs.
+Source_Transaction_Id	VARCHAR(50)	No	The original transaction identifier from the source system. Combined with Source_System_Cd forms a unique natural key. Allows the ETL to detect and skip duplicate rows if the same transaction is sent more than once from the source system.
+Load_Date	DATE	No	The date this row was loaded by the ETL process. Used for pipeline auditing and troubleshooting. May differ from Date_Key if transactions are loaded with a delay from the source system.
 goal_level_cd           VARCHAR(10)     Indicates the organizational level the
                                         goal is assigned to.
                                         Values: 'RM' or 'BRANCH'
