@@ -1,99 +1,15 @@
-CREATE PROCEDURE usp_Load_FactGoalSnap_CustomerCount
-    @Snap_Date      DATE,
-    @Goal_Version   VARCHAR(20)
-AS
-BEGIN
+ -- Actual: 38 out of 80 new deposit accounts also opened a loan = 47.50%
+    CAST(38 AS DECIMAL(18,4))
+      / NULLIF(CAST(80 AS DECIMAL(18,4)), 0)
+                                    AS Ytd_Actual_Value,   -- 0.4750
 
-    SET NOCOUNT ON;
+    -- Goal pulled from FactGoalAssign for this Resp_Code + Goal_Key
+    ag.Goal_Value                   AS Ytd_Goal_Value,     -- e.g., 0.5500 = 55%
 
-    -- ── Step 1: get business days from Dim_Date ──────────────
-    DECLARE @Biz_Days_Elapsed   INT;
-    DECLARE @Date_Key           INT;
-    DECLARE @Total_Biz_Days     INT;
+    103                             AS Ytd_Biz_Days_Elapsed,
 
-    SELECT
-        @Date_Key         = Date_Key,
-        @Biz_Days_Elapsed = Biz_Days_Elapsed
-    FROM Dim_Date
-    WHERE Full_Date = @Snap_Date;
-
-    SELECT
-        @Total_Biz_Days = COUNT(*)
-    FROM Dim_Date
-    WHERE Fiscal_Year          = YEAR(@Snap_Date)
-    AND   Is_Business_Day_Flag = 'Y';
-
-    -- ── Step 2: aggregate actuals from Dim_Customer ──────────
-    WITH Customer_Actuals AS (
-        SELECT
-            bar.Resp_Code,
-            COUNT(DISTINCT dc.Customer_Key)     AS Ytd_Actual_Value
-        FROM Dim_Customer               dc
-        JOIN Bridge_Account_Customer    bac ON  bac.Customer_Key    = dc.Customer_Key
-                                            AND bac.Is_Current_Flag = 'Y'
-        JOIN Dim_Account                da  ON  da.Account_Key      = bac.Account_Key
-        JOIN Bridge_Account_Resp        bar ON  bar.Account_Key     = da.Account_Key
-                                            AND bar.Is_Current_Flag = 'Y'
-        WHERE YEAR(dc.Relationship_Start_Date) = YEAR(@Snap_Date)
-        GROUP BY bar.Resp_Code
-    )
-
-    -- ── Step 3: join to FactGoalAssign and insert ────────────
-    INSERT INTO FactGoalSnap (
-        Date_Key,
-        Resp_Code,
-        Goal_Key,
-        Goal_Version,
-        Annual_Goal_Value,
-        Biz_Days_Elapsed,
-        Ytd_Goal_Value,
-        Ytd_Actual_Value,
-        Ytd_Variance_Value,
-        Projected_Year_End,
-        Load_Date
-    )
-    SELECT
-        @Date_Key,
-        fga.Resp_Code,
-        fga.Goal_Key,
-        fga.Goal_Version,
-        fga.Goal_Value                              AS Annual_Goal_Value,
-        @Biz_Days_Elapsed                           AS Biz_Days_Elapsed,
-
-        -- Prorated YTD goal
-        fga.Goal_Value
-            / @Total_Biz_Days
-            * @Biz_Days_Elapsed                     AS Ytd_Goal_Value,
-
-        -- Actual customer count YTD
-        ISNULL(ca.Ytd_Actual_Value, 0)              AS Ytd_Actual_Value,
-
-        -- Variance: actual - prorated goal
-        ISNULL(ca.Ytd_Actual_Value, 0)
-            - (fga.Goal_Value
-               / @Total_Biz_Days
-               * @Biz_Days_Elapsed)                 AS Ytd_Variance_Value,
-
-        -- Projected year end run rate
-        CASE
-            WHEN @Biz_Days_Elapsed = 0 THEN NULL
-            ELSE (ISNULL(ca.Ytd_Actual_Value, 0)
-                  / @Biz_Days_Elapsed)
-                  * @Total_Biz_Days
-        END                                         AS Projected_Year_End,
-
-        @Snap_Date                                  AS Load_Date
-
-    FROM FactGoalAssign             fga
-    LEFT JOIN Customer_Actuals      ca  ON  ca.Resp_Code  = fga.Resp_Code
-    WHERE fga.Goal_Key      = 'G015'        -- New Customer Count
-    AND   fga.Goal_Version  = @Goal_Version
-    AND   fga.Is_Enabled    = 'Y';
-
-END;
-GO
-
--- ── Execute ───────────────────────────────────────────────────
-EXEC usp_Load_FactGoalSnap_CustomerCount
-    @Snap_Date    = '2026-05-07',
-    @Goal_Version = 'FY2026';
+    -- Projected year-end: straight-line the actual rate (rates don't scale like dollars,
+    -- so you may prefer just carrying the current rate forward as-is)
+    CAST(38 AS DECIMAL(18,4))
+      / NULLIF(CAST(80 AS DECIMAL(18,4)), 0) * 1.0
+                                    AS Projected_Year_End  -- same as Ytd_Actual_Value for a rate
