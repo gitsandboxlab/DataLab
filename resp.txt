@@ -1,15 +1,11 @@
- -- Actual: 38 out of 80 new deposit accounts also opened a loan = 47.50%
-    CAST(38 AS DECIMAL(18,4))
-      / NULLIF(CAST(80 AS DECIMAL(18,4)), 0)
-                                    AS Ytd_Actual_Value,   -- 0.4750
-
-    -- Goal pulled from FactGoalAssign for this Resp_Code + Goal_Key
-    ag.Goal_Value                   AS Ytd_Goal_Value,     -- e.g., 0.5500 = 55%
-
-    103                             AS Ytd_Biz_Days_Elapsed,
-
-    -- Projected year-end: straight-line the actual rate (rates don't scale like dollars,
-    -- so you may prefer just carrying the current rate forward as-is)
-    CAST(38 AS DECIMAL(18,4))
-      / NULLIF(CAST(80 AS DECIMAL(18,4)), 0) * 1.0
-                                    AS Projected_Year_End  -- same as Ytd_Actual_Value for a rate
+SELECT 
+    snapshot_date,
+    COUNT(DISTINCT account_id) AS total_accounts
+FROM 
+    account_snapshots
+GROUP BY 
+    snapshot_date
+HAVING 
+    COUNT(DISTINCT account_id) <= 100
+ORDER BY 
+    snapshot_date DESC;
