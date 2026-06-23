@@ -1,11 +1,41 @@
+WITH ChurnDetected AS (
+    -- Step 1: Look at the previous snapshot for each computer to see if it's new
+    SELECT 
+        SnapshotDate,
+        ComputerName,
+        LAG(SnapshotDate, 1) OVER (PARTITION BY ComputerName ORDER BY SnapshotDate) AS PrevSnapshotDate
+    FROM DailyInventory
+),
+SessionFlags AS (
+    -- Step 2: Mark the start of a new "session" (added instance) 
+    -- It's a new session if there is no previous snapshot, or if the gap is greater than 1 day
+    SELECT 
+        SnapshotDate,
+        ComputerName,
+        CASE 
+            WHEN PrevSnapshotDate IS NULL OR SnapshotDate > DATEADD(day, 1, PrevSnapshotDate) THEN 1 
+            ELSE 0 
+        END AS IsNewSession
+    FROM ChurnDetected
+),
+SessionGrouped AS (
+    -- Step 3: Use a running sum of the flags to create a unique Session ID per computer
+    SELECT 
+        SnapshotDate,
+        ComputerName,
+        SUM(IsNewSession) OVER (PARTITION BY ComputerName ORDER BY SnapshotDate) AS SessionID
+    FROM SessionFlags
+)
+-- Step 4: Aggregate by the computer and session to find the Added and Removed dates
 SELECT 
-    snapshot_date,
-    COUNT(DISTINCT account_id) AS total_accounts
-FROM 
-    account_snapshots
+    ComputerName,
+    MIN(SnapshotDate) AS DateAdded,
+    -- If the max snapshot equals the latest database date, it might still be active (not removed)
+    MAX(SnapshotDate) AS DateLastRemoved
+FROM SessionGrouped
 GROUP BY 
-    snapshot_date
-HAVING 
-    COUNT(DISTINCT account_id) <= 100
+    ComputerName, 
+    SessionID
 ORDER BY 
-    snapshot_date DESC;
+    ComputerName, 
+    DateAdded;
