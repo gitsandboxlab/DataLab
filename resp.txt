@@ -1,5 +1,5 @@
 WITH ChurnDetected AS (
-    -- Step 1: Look at the previous snapshot for each computer to see if it's new
+    -- Step 1: Look at the previous snapshot for each computer
     SELECT 
         SnapshotDate,
         ComputerName,
@@ -7,8 +7,7 @@ WITH ChurnDetected AS (
     FROM DailyInventory
 ),
 SessionFlags AS (
-    -- Step 2: Mark the start of a new "session" (added instance) 
-    -- It's a new session if there is no previous snapshot, or if the gap is greater than 1 day
+    -- Step 2: Mark the start of a new session (gap > 1 day or first time seen)
     SELECT 
         SnapshotDate,
         ComputerName,
@@ -19,23 +18,31 @@ SessionFlags AS (
     FROM ChurnDetected
 ),
 SessionGrouped AS (
-    -- Step 3: Use a running sum of the flags to create a unique Session ID per computer
+    -- Step 3: Create a unique Session ID per computer using a running sum
     SELECT 
         SnapshotDate,
         ComputerName,
         SUM(IsNewSession) OVER (PARTITION BY ComputerName ORDER BY SnapshotDate) AS SessionID
     FROM SessionFlags
+),
+MaxSystemDate AS (
+    -- Step 4: Find the most recent date available in the entire dataset
+    SELECT MAX(SnapshotDate) AS MaxDate FROM DailyInventory
 )
--- Step 4: Aggregate by the computer and session to find the Added and Removed dates
+-- Step 5: Aggregate and apply conditional logic for active computers
 SELECT 
-    ComputerName,
-    MIN(SnapshotDate) AS DateAdded,
-    -- If the max snapshot equals the latest database date, it might still be active (not removed)
-    MAX(SnapshotDate) AS DateLastRemoved
-FROM SessionGrouped
+    g.ComputerName,
+    MIN(g.SnapshotDate) AS DateAdded,
+    CASE 
+        -- If the last day seen matches the ultimate max date in the data, it's still active
+        WHEN MAX(g.SnapshotDate) = (SELECT MaxDate FROM MaxSystemDate) THEN 'Still Active'
+        -- Otherwise, return the date it was last seen before it disappeared
+        ELSE CONVERT(VARCHAR(10), MAX(g.SnapshotDate), 120) 
+    END AS DateLastRemoved
+FROM SessionGrouped g
 GROUP BY 
-    ComputerName, 
-    SessionID
+    g.ComputerName, 
+    g.SessionID
 ORDER BY 
-    ComputerName, 
+    g.ComputerName, 
     DateAdded;
