@@ -4,3 +4,6 @@ cmdkey /generic:git:https://devops.mycompany.dev /user:pat /pass:YOUR_PAT_HERE
 
 cmdkey /add:git:https://devops.montecito.dev /user:anystring /pass:YOUR_PAT_HERE
 git clone https://devops.montecito.dev/DefaultCollection/DataSuper/_git/DataSlow C:\temp\test-clone4
+
+[System.Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
+[System.Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
