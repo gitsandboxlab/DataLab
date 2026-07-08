@@ -17,3 +17,18 @@ flow.from_source(
     name="my-deployment",
     work_pool_name="your-work-pool",
 )
+
+from prefect import flow
+
+# Decorate your actual function
+@flow
+def my_flow_function():
+    print("Running my flow!")
+
+if __name__ == "__main__":
+    # Call .deploy() on the FUNCTION name, not the word 'flow'
+    my_flow_function.deploy(
+        name="windows-local-deployment",
+        work_pool_name="my-windows-work-pool",
+        # ... your other settings
+    )
