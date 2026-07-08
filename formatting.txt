@@ -1,52 +1,57 @@
 import os
-from prefect import flow
+import shutil
+from pathlib import Path
 
-# Point at your on-prem Prefect server
-os.environ["PREFECT_API_URL"] = "http://your-server-hostname:4200/api"
+
+def copy_repo_to_unc(repo_folder_name: str, unc_destination: str):
+    """Copies all contents from C:\\Users\\<username>\\<repo_folder_name> to a UNC path.
+
+    Args:
+        repo_folder_name (str): The name of the folder inside your user directory
+        unc_destination (str): The target UNC path (e.g., r'\\server\share\folder')
+    """
+    # 1. Dynamically get the current Windows user's profile path
+    # This resolves to something like C:\Users\john_doe
+    user_profile = Path(os.environ["USERPROFILE"])
+
+    # 2. Build the full source path
+    source_dir = user_profile / "Repo" / repo_folder_name
+
+    # 3. Define the destination path
+    dest_dir = Path(unc_destination)
+
+    print(f"Source path: {source_dir}")
+    print(f"Destination path: {dest_dir}")
+
+    # Check if the source directory actually exists
+    if not source_dir.exists():
+        print(f"❌ Error: The source folder '{source_dir}' does not exist.")
+        return
+
+    try:
+        # Create destination directories if they don't exist yet
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # 4. Copy the entire directory tree
+        # dirs_exist_ok=True allows merging if the destination folder already exists
+        shutil.copytree(source_dir, dest_dir, dirs_exist_ok=True)
+
+        print("🚀 Successfully copied all files to the UNC directory!")
+
+    except PermissionError:
+        print(
+            "❌ Permission Error: Ensure you have write permissions to the UNC path."
+        )
+    except Exception as e:
+        print(f"❌ An error occurred: {e}")
+
 
 if __name__ == "__main__":
-    from prefect.deployments import Deployment
-    from prefect.runner.storage import LocalStorage
+    # --- CONFIGURE YOUR SETTINGS HERE ---
+    # Example: If your project is at C:\Users\username\Repo\my-project
+    MY_REPO_NAME = "my-project"
 
-    deployment = Deployment.build_from_flow(
-        flow=flow.from_source(
-            source=LocalStorage(path="C:\\your\\scripts"),
-            entrypoint="my_flow.py:my_flow",
-        ),
-        name="my-flow-prod",
-        work_pool_name="windows-process-pool",
-    )
-    deployment.apply()
+    # Example UNC Path (Note the 'r' prefix for raw string handling)
+    UNC_TARGET = r"\\your-server-name\shared_folder\backup_destination"
 
-
-git config --global credential.https://devops.mycompany.dev.authority Basic
-git config --global http.sslVerify false
-cmdkey /generic:git:https://devops.mycompany.dev /user:pat /pass:YOUR_PAT_HERE
-
-[System.Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
-[System.Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
-
-from prefect import flow
-
-flow.from_source(
-    source="C:\\repos\\DataSlow",  # this path only needs to exist on the SERVER
-    entrypoint="flows/my_flow.py:my_flow",
-).deploy(
-    name="my-deployment",
-    work_pool_name="your-work-pool",
-)
-
-from prefect import flow
-
-# Decorate your actual function
-@flow
-def my_flow_function():
-    print("Running my flow!")
-
-if __name__ == "__main__":
-    # Call .deploy() on the FUNCTION name, not the word 'flow'
-    my_flow_function.deploy(
-        name="windows-local-deployment",
-        work_pool_name="my-windows-work-pool",
-        # ... your other settings
-    )
+    copy_repo_to_unc(MY_REPO_NAME, UNC_TARGET)
