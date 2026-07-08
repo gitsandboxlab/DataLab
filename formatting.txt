@@ -7,3 +7,13 @@ git clone https://devops.montecito.dev/DefaultCollection/DataSuper/_git/DataSlow
 
 [System.Environment]::SetEnvironmentVariable("GCM_INTERACTIVE", "never", "Machine")
 [System.Environment]::SetEnvironmentVariable("GIT_TERMINAL_PROMPT", "0", "Machine")
+
+from prefect import flow
+
+flow.from_source(
+    source="C:\\repos\\DataSlow",  # this path only needs to exist on the SERVER
+    entrypoint="flows/my_flow.py:my_flow",
+).deploy(
+    name="my-deployment",
+    work_pool_name="your-work-pool",
+)
