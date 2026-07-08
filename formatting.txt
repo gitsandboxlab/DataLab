@@ -1,3 +1,6 @@
 git config --global credential.https://devops.mycompany.dev.authority Basic
 git config --global http.sslVerify false
 cmdkey /generic:git:https://devops.mycompany.dev /user:pat /pass:YOUR_PAT_HERE
+
+cmdkey /add:git:https://devops.montecito.dev /user:anystring /pass:YOUR_PAT_HERE
+git clone https://devops.montecito.dev/DefaultCollection/DataSuper/_git/DataSlow C:\temp\test-clone4
