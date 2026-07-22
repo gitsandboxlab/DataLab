@@ -1,57 +1,20 @@
-import os
-import shutil
-from pathlib import Path
+# Define target server and port
+$SyslogServer = "192.168.1.100"  # Replace with your Linux box IP
+$Port = 514
 
+# Draft the RFC 3164 formatted syslog message
+# <13> = Priority (Facility: user-level [1], Severity: Notice [5] -> (1*8)+5 = 13)
+$Timestamp = (Get-Date).ToString("MMM dd HH:mm:ss")
+$Hostname = $env:COMPUTERNAME
+$Message = "<13>$Timestamp $Hostname TestApp: Hello rsyslog, this is a test packet from PowerShell!"
 
-def copy_repo_to_unc(repo_folder_name: str, unc_destination: str):
-    """Copies all contents from C:\\Users\\<username>\\<repo_folder_name> to a UNC path.
+# Convert string message to bytes
+$Bytes = [System.Text.Encoding]::ASCII.GetBytes($Message)
 
-    Args:
-        repo_folder_name (str): The name of the folder inside your user directory
-        unc_destination (str): The target UNC path (e.g., r'\\server\share\folder')
-    """
-    # 1. Dynamically get the current Windows user's profile path
-    # This resolves to something like C:\Users\john_doe
-    user_profile = Path(os.environ["USERPROFILE"])
+# Open UDP Socket and send data
+$UdpClient = New-Object System.Net.Sockets.UdpClient
+$UdpClient.Connect($SyslogServer, $Port)
+[void]$UdpClient.Send($Bytes, $Bytes.Length)
+$UdpClient.Close()
 
-    # 2. Build the full source path
-    source_dir = user_profile / "Repo" / repo_folder_name
-
-    # 3. Define the destination path
-    dest_dir = Path(unc_destination)
-
-    print(f"Source path: {source_dir}")
-    print(f"Destination path: {dest_dir}")
-
-    # Check if the source directory actually exists
-    if not source_dir.exists():
-        print(f"❌ Error: The source folder '{source_dir}' does not exist.")
-        return
-
-    try:
-        # Create destination directories if they don't exist yet
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        # 4. Copy the entire directory tree
-        # dirs_exist_ok=True allows merging if the destination folder already exists
-        shutil.copytree(source_dir, dest_dir, dirs_exist_ok=True)
-
-        print("🚀 Successfully copied all files to the UNC directory!")
-
-    except PermissionError:
-        print(
-            "❌ Permission Error: Ensure you have write permissions to the UNC path."
-        )
-    except Exception as e:
-        print(f"❌ An error occurred: {e}")
-
-
-if __name__ == "__main__":
-    # --- CONFIGURE YOUR SETTINGS HERE ---
-    # Example: If your project is at C:\Users\username\Repo\my-project
-    MY_REPO_NAME = "my-project"
-
-    # Example UNC Path (Note the 'r' prefix for raw string handling)
-    UNC_TARGET = r"\\your-server-name\shared_folder\backup_destination"
-
-    copy_repo_to_unc(MY_REPO_NAME, UNC_TARGET)
+Write-Host "Sent fake UDP syslog packet to $SyslogServer:$Port" -ForegroundColor Green
