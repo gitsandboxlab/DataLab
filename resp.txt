@@ -1,48 +1,35 @@
-WITH ChurnDetected AS (
-    -- Step 1: Look at the previous snapshot for each computer
-    SELECT 
-        SnapshotDate,
-        ComputerName,
-        LAG(SnapshotDate, 1) OVER (PARTITION BY ComputerName ORDER BY SnapshotDate) AS PrevSnapshotDate
-    FROM DailyInventory
-),
-SessionFlags AS (
-    -- Step 2: Mark the start of a new session (gap > 1 day or first time seen)
-    SELECT 
-        SnapshotDate,
-        ComputerName,
-        CASE 
-            WHEN PrevSnapshotDate IS NULL OR SnapshotDate > DATEADD(day, 1, PrevSnapshotDate) THEN 1 
-            ELSE 0 
-        END AS IsNewSession
-    FROM ChurnDetected
-),
-SessionGrouped AS (
-    -- Step 3: Create a unique Session ID per computer using a running sum
-    SELECT 
-        SnapshotDate,
-        ComputerName,
-        SUM(IsNewSession) OVER (PARTITION BY ComputerName ORDER BY SnapshotDate) AS SessionID
-    FROM SessionFlags
-),
-MaxSystemDate AS (
-    -- Step 4: Find the most recent date available in the entire dataset
-    SELECT MAX(SnapshotDate) AS MaxDate FROM DailyInventory
-)
--- Step 5: Aggregate and apply conditional logic for active computers
-SELECT 
-    g.ComputerName,
-    MIN(g.SnapshotDate) AS DateAdded,
-    CASE 
-        -- If the last day seen matches the ultimate max date in the data, it's still active
-        WHEN MAX(g.SnapshotDate) = (SELECT MaxDate FROM MaxSystemDate) THEN 'Still Active'
-        -- Otherwise, return the date it was last seen before it disappeared
-        ELSE CONVERT(VARCHAR(10), MAX(g.SnapshotDate), 120) 
-    END AS DateLastRemoved
-FROM SessionGrouped g
-GROUP BY 
-    g.ComputerName, 
-    g.SessionID
-ORDER BY 
-    g.ComputerName, 
-    DateAdded;
+1. Report inventory
+
+Catalog every report: regulatory (Call Report, CRA, BSA/SAR, HMDA), risk (credit, liquidity, capital/ALCO), board/management, operational/ad hoc
+Tag each by criticality tier — regulatory > board > management > operational — since controls scale with tier
+
+2. Ownership
+
+Per report: a business owner, a data owner (source system), a control owner (validates the pipeline)
+One reporting committee for sign-off on new/changed reports and error escalation
+
+3. Lineage & definitions
+
+Source-to-report lineage for every regulatory/risk report — examiners increasingly expect this even at sub-$50B banks (BCBS 239 principles get pushed down informally)
+One business glossary — single definition per metric, no report-specific math hiding in a spreadsheet
+
+4. Production monitoring (the "what monitoring" part)
+
+Timeliness — SLA/deadline per report, alert on missed cutoff
+Completeness — record counts, expected vs. actual volume
+Accuracy — reconciliation to general ledger / core banking system of record
+Data quality gate before publish — nulls, ranges, referential integrity
+Automated alerting on threshold breach or pipeline failure
+Exception log with remediation tracking, not just a Slack message that gets lost
+
+5. Change management
+
+Version control on report logic/calculations
+UAT and sign-off before any logic change hits production
+Change log tied back to the lineage doc
+
+6. Attestation & audit trail
+
+Preparer → reviewer → approver sign-off per submission, segregation of duties enforced
+Retained evidence per report: source snapshot, calc, final output, approvals — retention matched to your exam cycle
+Independent (second-line or internal audit) validation on a rotating basis for high-tier reports
