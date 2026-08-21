@@ -1,33 +1,51 @@
-Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $miObjectId | 
-  Where-Object { $_.ResourceDisplayName -eq "Microsoft Graph" } |
-  Select-Object PrincipalDisplayName, ResourceDisplayName, AppRoleId
+import json
+from datetime import date, datetime, timezone
 
-Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $miObjectId | 
-  Where-Object { $_.ResourceDisplayName -eq "Microsoft Graph" } |
-  Select-Object AppRoleId, ResourceDisplayName
+import pandas as pd
+from azure.identity import ClientSecretCredential
+from azure.storage.blob import BlobServiceClient
 
-$graphSp.AppRoles | Where-Object { $_.Value -eq "Policy.Read.All" -and $_.AllowedMemberTypes -contains "Application" } | Select-Object Id
 
-GET https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '00000003-0000-0000-c000-000000000000'&$select=appRoles
+def fetch_raw_json(
+    account_url: str,
+    container_path: str,
+    tenant_id: str,
+    client_id: str,
+    secret: str,
+    file_name: str,
+    data_date: date,
+) -> str:
+    """
+    Fetch a raw JSON blob for the given date and return it as a string.
 
-Connect-MgGraph -Scopes "Application.Read.All","AppRoleAssignment.ReadWrite.All"
+    container_path: first segment is the container name, remainder is the subfolder
+                     e.g. "raw/cap-policy" -> container "raw", subfolder "cap-policy"
+    Blob path resolves to: {subfolder}/{yyyy}/{m}/{d}/{file_name}_{yyyyMMdd}.json
+    """
+    container_name, _, subfolder = container_path.partition("/")
 
-# Look up the managed identity's service principal by name
-$mi = Get-MgServicePrincipal -Filter "displayName eq 'id-logic-dat'"
-$miObjectId = $mi.Id
+    credential = ClientSecretCredential(tenant_id, client_id, secret)
+    blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+    container_client = blob_service_client.get_container_client(container_name)
 
-# Microsoft Graph service principal
-$graphSp = Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'"
+    blob_name = (
+        f"{subfolder}/{data_date.year}/{data_date.month}/{data_date.day}/"
+        f"{file_name}_{data_date:%Y%m%d}.json"
+    )
 
-# Find the Policy.Read.All application role
-$appRole = $graphSp.AppRoles | Where-Object { $_.Value -eq "Policy.Read.All" -and $_.AllowedMemberTypes -contains "Application" }
+    blob_client = container_client.get_blob_client(blob_name)
+    return blob_client.download_blob().readall().decode("utf-8")
 
-# Sanity check before assigning - all three should show a GUID
-$miObjectId
-$graphSp.Id
-$appRole.Id
 
-New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $miObjectId `
-  -PrincipalId $miObjectId `
-  -ResourceId $graphSp.Id `
-  -AppRoleId $appRole.Id
+def parse_cap_policies(raw_json: str) -> pd.DataFrame:
+    """Parse raw CA policy JSON into one row per policy."""
+    policies = json.loads(raw_json)["value"]
+    load_time = datetime.now(timezone.utc)
+
+    return pd.DataFrame([{
+        "PolicyId": p["id"],
+        "DisplayName": p["displayName"],
+        "State": p["state"],
+        "LoadDateTime": load_time,
+        "PolicyJson": json.dumps(p),
+    } for p in policies])
