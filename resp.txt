@@ -1,3 +1,7 @@
+Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $miObjectId | 
+  Where-Object { $_.ResourceDisplayName -eq "Microsoft Graph" } |
+  Select-Object PrincipalDisplayName, ResourceDisplayName, AppRoleId
+
 GET https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '00000003-0000-0000-c000-000000000000'&$select=appRoles
 
 Connect-MgGraph -Scopes "Application.Read.All","AppRoleAssignment.ReadWrite.All"
