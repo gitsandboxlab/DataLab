@@ -1,51 +1,61 @@
-import json
-from datetime import date, datetime, timezone
+# Re-IP'ing a RHEL 10.2 Machine
 
-import pandas as pd
-from azure.identity import ClientSecretCredential
-from azure.storage.blob import BlobServiceClient
+## Before You Start
+- **Have console access ready** (iDRAC/iLO, hypervisor console, or cloud provider serial console). If you're connected over SSH, a mistake in the new IP/gateway can drop your session with no way back in except the console.
+- **Record the current config** first:
+  ```bash
+  ip addr show
+  ip route show
+  ```
+- On RHEL 10.2, NetworkManager (`nmcli`) is the only supported method — the legacy `ifcfg` / network-scripts files are no longer used.
 
+## Step-by-Step
 
-def fetch_raw_json(
-    account_url: str,
-    container_path: str,
-    tenant_id: str,
-    client_id: str,
-    secret: str,
-    file_name: str,
-    data_date: date,
-) -> str:
-    """
-    Fetch a raw JSON blob for the given date and return it as a string.
+**1. Find your connection name and interface**
+```bash
+nmcli connection show
+```
 
-    container_path: first segment is the container name, remainder is the subfolder
-                     e.g. "raw/cap-policy" -> container "raw", subfolder "cap-policy"
-    Blob path resolves to: {subfolder}/{yyyy}/{m}/{d}/{file_name}_{yyyyMMdd}.json
-    """
-    container_name, _, subfolder = container_path.partition("/")
+**2. Set the new static IP, gateway, and DNS**
+```bash
+sudo nmcli connection modify "<conn-name>" ipv4.addresses 192.168.1.50/24
+sudo nmcli connection modify "<conn-name>" ipv4.gateway 192.168.1.1
+sudo nmcli connection modify "<conn-name>" ipv4.dns "8.8.8.8 8.8.4.4"
+sudo nmcli connection modify "<conn-name>" ipv4.method manual
+```
 
-    credential = ClientSecretCredential(tenant_id, client_id, secret)
-    blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
-    container_client = blob_service_client.get_container_client(container_name)
+**3. Apply the change**
+```bash
+sudo nmcli connection up "<conn-name>"
+```
 
-    blob_name = (
-        f"{subfolder}/{data_date.year}/{data_date.month}/{data_date.day}/"
-        f"{file_name}_{data_date:%Y%m%d}.json"
-    )
+**4. Verify connectivity (ideally from the console, not the SSH session you might just have dropped)**
+```bash
+ip -4 addr show
+ip route show
+ping <gateway-ip>
+```
 
-    blob_client = container_client.get_blob_client(blob_name)
-    return blob_client.download_blob().readall().decode("utf-8")
+**5. Update everything that referenced the old IP**
+- DNS records (forward and reverse/PTR)
+- `/etc/hosts` on this box and any others that reference it
+- Firewall / security group rules
+- Monitoring, inventory, and CMDB systems
+- Any hardcoded IPs in application configs or connection strings
 
+## RHEL 10-Specific Notes
+- If you leave `ipv4.method` as `auto` instead of `manual`, NetworkManager will still attempt DHCP alongside your static config — you can end up with two addresses on the interface.
+- `nmcli connection modify` only edits the stored profile — nothing takes effect until you run `nmcli connection up` (or reboot).
+- NetworkManager writes the profile automatically to `/etc/NetworkManager/system-connections/`, so there's no separate step needed to make it persist across reboots.
+- After changing the IP, double-check your `firewalld` zone assignment — a new IP/subnet might not fall into the zone you expect, which can silently block traffic even though the interface looks fine.
+- `nmtui` is available as a text-UI alternative to raw `nmcli` commands if you want to edit interactively:
+  ```bash
+  sudo nmtui
+  ```
 
-def parse_cap_policies(raw_json: str) -> pd.DataFrame:
-    """Parse raw CA policy JSON into one row per policy."""
-    policies = json.loads(raw_json)["value"]
-    load_time = datetime.now(timezone.utc)
-
-    return pd.DataFrame([{
-        "PolicyId": p["id"],
-        "DisplayName": p["displayName"],
-        "State": p["state"],
-        "LoadDateTime": load_time,
-        "PolicyJson": json.dumps(p),
-    } for p in policies])
+## If This Is an Azure VM
+Changing the OS-level IP alone usually isn't enough. Azure VMs typically expect their private IP assigned via the NIC resource in Azure:
+```bash
+az network nic ip-config update ...
+```
+DHCP inside the guest OS then picks up the address from there. Manually re-IPing the OS without updating the NIC config first can cause a mismatch that breaks connectivity on reboot.
