@@ -1,20 +1,41 @@
-# Define target server and port
-$SyslogServer = "192.168.1.100"  # Replace with your Linux box IP
-$Port = 514
+# Stopping Console Message Interruptions on a vSphere Console Session
 
-# Draft the RFC 3164 formatted syslog message
-# <13> = Priority (Facility: user-level [1], Severity: Notice [5] -> (1*8)+5 = 13)
-$Timestamp = (Get-Date).ToString("MMM dd HH:mm:ss")
-$Hostname = $env:COMPUTERNAME
-$Message = "<13>$Timestamp $Hostname TestApp: Hello rsyslog, this is a test packet from PowerShell!"
+First, figure out which type of message you're seeing:
+- **Kernel/driver messages** look like `[12345.678901] ...` with a timestamp — use the Kernel Messages fix below.
+- **Broadcast messages** literally start with `Broadcast message from root@...` — use the Broadcast Messages fix below.
 
-# Convert string message to bytes
-$Bytes = [System.Text.Encoding]::ASCII.GetBytes($Message)
+---
 
-# Open UDP Socket and send data
-$UdpClient = New-Object System.Net.Sockets.UdpClient
-$UdpClient.Connect($SyslogServer, $Port)
-[void]$UdpClient.Send($Bytes, $Bytes.Length)
-$UdpClient.Close()
+## Fix 1: Kernel Messages Interrupting the Console
 
-Write-Host "Sent fake UDP syslog packet to $SyslogServer:$Port" -ForegroundColor Green
+**Quick fix (current session only):**
+```bash
+dmesg -n 1
+```
+This limits the console to true emergency-level messages only. Everything less severe (info, warnings, most errors) stops printing to the console but is still fully logged — view it anytime with `dmesg` or `journalctl`.
+
+**Persistent fix (survives reboot):**
+```bash
+echo "kernel.printk = 3 4 1 3" | sudo tee /etc/sysctl.d/99-printk.conf
+sudo sysctl --system
+```
+The four numbers are: console log level, default message level, minimum console level, default console level. Setting the first to `3` means only errors and above hit the console.
+
+**Suppress from boot onward too:**
+Add `loglevel=3` (or `quiet`) to the kernel command line in `/etc/default/grub`, then rebuild the config:
+```bash
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+```
+
+---
+
+## Fix 2: Broadcast Messages (from `wall`, shutdown warnings, or login/logout notices)
+
+**Block incoming messages to your current terminal:**
+```bash
+mesg n
+```
+This is per-session. To make it apply every time you log in via console, add it to your shell profile:
+```bash
+echo "mesg n" >> ~/.bash_profile
+```
