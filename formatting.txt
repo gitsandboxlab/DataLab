@@ -1,58 +1,27 @@
-# Logic App: fetch-defender-recommendations
+import json
+import pandas as pd
+from datetime import datetime, timezone
 
-Pulls Microsoft Defender for Cloud recommendations across 3 subscriptions via Azure Resource Graph, and lands the raw result as a single JSON array in Blob storage — following your existing `fetch-<source>-<entity>` and `{source}/{entity}/{yyyy}/{MM}/{dd}/{filename}` conventions.
+def parse_defender_recommendations(raw_json: str) -> pd.DataFrame:
+    """
+    Parses the raw JSON array from the fetch-defender-recommendations blob
+    into a DataFrame ready for SQL insert: identifier, ingested_at, json_record.
+    """
+    records = json.loads(raw_json)
+    ingested_at = datetime.now(timezone.utc)
 
-Downstream, this file gets parsed in Python and loaded into SQL Server as one row per recommendation, with the full record kept as raw JSON text (identifier, timestamp, JSON record columns) rather than flattened — so no NDJSON reshaping happens in the Logic App itself.
+    rows = []
+    for record in records:
+        identifier = record.get("id")
+        if not identifier:
+            continue
+        rows.append({
+            "identifier": identifier,
+            "ingested_at": ingested_at,
+            "json_record": json.dumps(record),
+        })
 
-## Prerequisites (already done)
-
-- UAMI assigned the **Security Reader** role in each of your 3 subscriptions via IAM.
-- UAMI attached to this Logic App.
-- SAMI already used for the built-in Blob connector, per your existing pattern.
-
----
-
-## Step 1 — Create the workflow
-
-In your Logic App Standard app, add a new **Stateful** workflow named `fetch-defender-recommendations`.
-
-## Step 2 — Add the trigger
-
-- Trigger type: **Recurrence**
-- Interval: `1`, Frequency: `Day`
-- Set the start time / time zone to align with the rest of your daily pipeline cadence.
-
-## Step 3 — Initialize variables
-
-Add six **Initialize Variable** actions, in this order, right after the trigger:
-
-| Name | Type | Value |
-|---|---|---|
-| `subscriptionIds` | Array | `["<sub-id-1>", "<sub-id-2>", "<sub-id-3>"]` |
-| `pstTimestamp` | String | your existing PST-conversion expression |
-| `kqlQuery` | String | `securityresources \| where type == 'microsoft.security/assessments'` |
-| `skipToken` | String | *(leave empty)* |
-| `allRecommendations` | Array | `[]` |
-| `ndjsonLines` | Array | `[]` |
-
-## Step 4 — Do-until loop (pagination)
-
-Add a **Do until** action, name it something like `Until_all_pages_fetched`.
-
-- **Condition:** `@equals(variables('skipToken'), '')`
-- Check the loop's **Change limits** (under the "..." on the action): default is 60 iterations / 1 hour timeout — plenty of headroom for this volume, but worth knowing it's there if you ever query a much larger environment.
-
-### Inside the loop — Action 1: HTTP
-
-Add an **HTTP** action inside the Do-until.
-
-| Field | Value |
-|---|---|
-| Method | `POST` |
-| URI | `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01` |
-| Headers | `Content-Type: application/json` |
-| Authentication type | Managed Identity |
-| Managed Identity | your UAMI |
+    return pd.DataFrame(rows, columns=["identifier", "ingested_at", "json_record"])| Managed Identity | your UAMI |
 | Audience | `https://management.azure.com/` |
 
 **Body** — switch the Body field to expression/raw input and paste:
