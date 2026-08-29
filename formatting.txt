@@ -1,4 +1,141 @@
-{
-  "subscriptions": ["<sub-id-1>", "<sub-id-2>", "<sub-id-3>"],
-  "query": "securityresources | where type == 'microsoft.security/assessments'"
-}
+# Logic App: fetch-defender-recommendations
+
+Pulls Microsoft Defender for Cloud recommendations across 3 subscriptions via Azure Resource Graph, and lands the raw result as a single JSON array in Blob storage — following your existing `fetch-<source>-<entity>` and `{source}/{entity}/{yyyy}/{MM}/{dd}/{filename}` conventions.
+
+Downstream, this file gets parsed in Python and loaded into SQL Server as one row per recommendation, with the full record kept as raw JSON text (identifier, timestamp, JSON record columns) rather than flattened — so no NDJSON reshaping happens in the Logic App itself.
+
+## Prerequisites (already done)
+
+- UAMI assigned the **Security Reader** role in each of your 3 subscriptions via IAM.
+- UAMI attached to this Logic App.
+- SAMI already used for the built-in Blob connector, per your existing pattern.
+
+---
+
+## Step 1 — Create the workflow
+
+In your Logic App Standard app, add a new **Stateful** workflow named `fetch-defender-recommendations`.
+
+## Step 2 — Add the trigger
+
+- Trigger type: **Recurrence**
+- Interval: `1`, Frequency: `Day`
+- Set the start time / time zone to align with the rest of your daily pipeline cadence.
+
+## Step 3 — Initialize variables
+
+Add six **Initialize Variable** actions, in this order, right after the trigger:
+
+| Name | Type | Value |
+|---|---|---|
+| `subscriptionIds` | Array | `["<sub-id-1>", "<sub-id-2>", "<sub-id-3>"]` |
+| `pstTimestamp` | String | your existing PST-conversion expression |
+| `kqlQuery` | String | `securityresources \| where type == 'microsoft.security/assessments'` |
+| `skipToken` | String | *(leave empty)* |
+| `allRecommendations` | Array | `[]` |
+| `ndjsonLines` | Array | `[]` |
+
+## Step 4 — Do-until loop (pagination)
+
+Add a **Do until** action, name it something like `Until_all_pages_fetched`.
+
+- **Condition:** `@equals(variables('skipToken'), '')`
+- Check the loop's **Change limits** (under the "..." on the action): default is 60 iterations / 1 hour timeout — plenty of headroom for this volume, but worth knowing it's there if you ever query a much larger environment.
+
+### Inside the loop — Action 1: HTTP
+
+Add an **HTTP** action inside the Do-until.
+
+| Field | Value |
+|---|---|
+| Method | `POST` |
+| URI | `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01` |
+| Headers | `Content-Type: application/json` |
+| Authentication type | Managed Identity |
+| Managed Identity | your UAMI |
+| Audience | `https://management.azure.com/` |
+
+**Body** — switch the Body field to expression/raw input and paste:
+
+```
+@if(
+  equals(variables('skipToken'), ''),
+  createObject('subscriptions', variables('subscriptionIds'), 'query', variables('kqlQuery')),
+  createObject('subscriptions', variables('subscriptionIds'), 'query', variables('kqlQuery'), 'options', createObject('$skipToken', variables('skipToken')))
+)
+```
+
+This sends the plain query on the first pass, and automatically includes `$skipToken` on every pass after that — no separate branch needed.
+
+### Inside the loop — Action 2: Set variable (`allRecommendations`)
+
+Add a **Set variable** action, targeting `allRecommendations`:
+
+```
+@union(variables('allRecommendations'), coalesce(body('HTTP')?['data'], json('[]')))
+```
+
+### Inside the loop — Action 3: Set variable (`skipToken`)
+
+Add another **Set variable** action, targeting `skipToken`:
+
+```
+@coalesce(body('HTTP')?['skipToken'], '')
+```
+
+When a response comes back with no `skipToken`, this evaluates to an empty string, the Do-until condition becomes true, and the loop ends. At that point `allRecommendations` holds every recommendation across all 3 subscriptions.
+
+## Step 5 — Upload to Blob
+
+Add the built-in **Azure Blob → Create blob (V2)** action, using SAMI auth (same as your other `fetch-*` workflows).
+
+| Field | Value |
+|---|---|
+| Folder path | `inbound/defender/recommendations/@{formatDateTime(variables('pstTimestamp'), 'yyyy')}/@{formatDateTime(variables('pstTimestamp'), 'MM')}/@{formatDateTime(variables('pstTimestamp'), 'dd')}/` |
+| Blob name | `recommendations.json` |
+| Content | `@string(variables('allRecommendations'))` |
+
+This writes the full array of recommendations as one JSON document — no reshaping needed, since the downstream Python load parses the whole array with a single `json.loads()` call rather than reading it line by line.
+
+## Step 6 — Save and test
+
+1. Save the workflow.
+2. Use **Run Trigger → Run** to fire it manually rather than waiting for the schedule.
+3. Open the run history, check the HTTP action's raw output to confirm you're getting real recommendation data back.
+4. Confirm the blob landed at the expected path, and spot-check that it parses as a valid JSON array (e.g. open it and confirm it starts with `[` and ends with `]`, with individual recommendation objects inside).
+5. Specifically check whether the Do-until loop ran more than once — if your 3 subscriptions return fewer than 1,000 total assessment records, `skipToken` pagination never actually triggers a second pass, and this is the moment to confirm that path works before you need it at larger scale.
+
+---
+
+## Quick reference: full variable/expression list
+
+- `subscriptionIds` → `["<sub-id-1>", "<sub-id-2>", "<sub-id-3>"]`
+- `kqlQuery` → `securityresources | where type == 'microsoft.security/assessments'`
+- HTTP body → `@if(equals(variables('skipToken'), ''), createObject('subscriptions', variables('subscriptionIds'), 'query', variables('kqlQuery')), createObject('subscriptions', variables('subscriptionIds'), 'query', variables('kqlQuery'), 'options', createObject('$skipToken', variables('skipToken'))))`
+- `allRecommendations` update → `@union(variables('allRecommendations'), coalesce(body('HTTP')?['data'], json('[]')))`
+- `skipToken` update → `@coalesce(body('HTTP')?['skipToken'], '')`
+- Blob content → `@string(variables('allRecommendations'))`
+
+---
+
+## Downstream: loading into SQL Server (Python/Prefect, not part of this Logic App)
+
+```python
+import json
+from datetime import datetime, timezone
+
+records = json.loads(blob_content)  # plain list of dicts
+
+rows = [
+    (
+        r.get("id"),                # identifier — the assessment's own unique ID
+        datetime.now(timezone.utc), # timestamp — ingestion time
+        json.dumps(r),              # full record, kept as raw JSON text
+    )
+    for r in records
+]
+
+# bulk-insert `rows` via pyodbc/sqlalchemy, same pattern as your other sources
+```
+
+Target table: three columns — an identifier (the assessment's own `id`, not a generated key), a timestamp (ingestion time), and the full record as `NVARCHAR(MAX)`. Querying specific fields later (severity, status, etc.) can go through `JSON_VALUE()`/`OPENJSON()` against that column without needing the schema flattened up front.
