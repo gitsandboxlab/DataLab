@@ -1,1 +1,4 @@
-HTTP action, method GET, Authentication type = "Managed Identity," Identity = your UAMI, Audience = https://management.azure.com/. URI: https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2021-06-01. No manual token handling needed — the HTTP action's built-in Managed Identity auth fetches the ARM-scoped token for you.
+{
+  "subscriptions": ["<sub-id-1>", "<sub-id-2>", "<sub-id-3>"],
+  "query": "securityresources | where type == 'microsoft.security/assessments'"
+}
