@@ -1,1 +1,33 @@
-"@json(concat('{\"subscriptions\":', string(variables('subscriptionIds')), ',\"query\":\"', variables('kqlQuery'), '\"', if(empty(variables('skipToken')), ',\"options\":{\"$top\":5}', concat(',\"options\":{\"$top\":5,\"$skipToken\":\"', variables('skipToken'), '\"}')), '}'))"
+import pandas as pd
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+
+def materialize_views(engine: Engine, view_table_map: list[dict], truncate: bool = True) -> None:
+    """
+    Copy each view into its corresponding table (reload nightly).
+
+    view_table_map: list of dicts, e.g.
+        [{"view": "dbo.vw_SigninSummary", "table": "dbo.SigninSummary_Snapshot"}, ...]
+    Both view and table can be schema-qualified ("schema.name") or unqualified.
+    truncate: if True (default), clears the table before reload. If False, appends.
+    """
+    for entry in view_table_map:
+        view = entry["view"]
+        table = entry["table"]
+
+        df = pd.read_sql(f"SELECT * FROM {view}", engine)
+
+        schema, _, table_name = table.rpartition(".")
+        schema = schema or None
+
+        with engine.begin() as conn:
+            if truncate:
+                conn.execute(text(f"TRUNCATE TABLE {table}"))
+            df.to_sql(
+                table_name,
+                conn,
+                schema=schema,
+                if_exists="append",
+                index=False,
+            )
