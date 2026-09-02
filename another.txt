@@ -1,0 +1,212 @@
+# Conditional Access Gap Analyzer — All KQL Queries
+
+Source: the actual Microsoft-published workbook definition, `conditionalAccessGapAnalyzer.workbook`,
+from the public repo `microsoft/Application-Insights-Workbooks` on GitHub (path: `Workbooks/Azure Active
+Directory Conditional Access/Conditional Access Gap Analyzer/`). Pulled directly from source, not
+reconstructed from memory — verify against that file yourself if you want to double check.
+
+All queries run against `SigninLogs` in your Log Analytics workspace. Two different "was CA applied"
+signals are used across the file — worth knowing before you read the queries:
+- `ConditionalAccessStatus == "notApplied"` — the overall sign-in result had no CA policy apply at all.
+  This is the main "gap" signal, used in the app/location/risk sections.
+- `ConditionalAccessPolicies != "[]"` — at least one CA policy was evaluated for the sign-in (used only
+  in the legacy-vs-modern-auth pie chart, to compare traffic mix, not to find gaps).
+
+Several queries below contain `{placeholders}` like `{user}`, `{app}`, `{country}` — these are workbook
+parameter tokens, populated automatically when someone clicks a row in the workbook's table. They are
+NOT valid KQL as-is outside the workbook. To run one of these standalone (e.g. from a Logic App), either
+hardcode a specific value in place of the token, or delete the `where` line that filters on it to get
+results for everyone/everything instead of one drill-down target.
+
+---
+
+## Section 1: Legacy Authentication
+
+### 1a. Users Signing-In Using Legacy vs. Modern Authentication (piechart)
+```kql
+SigninLogs
+| project ClientAppUsed, ResultType, ConditionalAccessPolicies, UserDisplayName
+| where ConditionalAccessPolicies != "[]"
+| where ResultType == 0
+| extend filterClientApp = case(ClientAppUsed != "Browser" and ClientAppUsed != "Mobile Apps and Desktop clients", "Legacy Authentication", "Modern Authentication")
+| summarize count() by UserDisplayName, filterClientApp
+| summarize Count = count() by filterClientApp
+```
+
+### 1b. Users Using Legacy Authentication by Application (bar chart)
+```kql
+SigninLogs
+| project ClientAppUsed, AppDisplayName, ConditionalAccessPolicies, ResultType, UserDisplayName
+| where ClientAppUsed != "Browser" and ClientAppUsed != "Mobile Apps and Desktop clients"
+| where ConditionalAccessPolicies != "[]"
+| where ResultType == 0
+| summarize count() by UserDisplayName, AppDisplayName
+| summarize Count = count() by AppDisplayName
+```
+
+### 1c. Select an application and user to learn more (drill-down source table)
+```kql
+SigninLogs
+| project ClientAppUsed, AppDisplayName, ConditionalAccessPolicies, ResultType, UserDisplayName
+| where ClientAppUsed != "Browser" and ClientAppUsed != "Mobile Apps and Desktop clients"
+| where ConditionalAccessPolicies != "[]"
+| where ResultType == 0
+| summarize count() by UserDisplayName, AppDisplayName, ClientAppUsed
+| project-away count_
+```
+
+### 1d. {user} legacy authentication sign-ins to {app} (drill-down detail)
+```kql
+SigninLogs
+| project UserDisplayName, ClientAppUsed, AppDisplayName, ConditionalAccessPolicies, ResultType, TimeGenerated, CorrelationId, LocationDetails, DeviceDetail
+| where ClientAppUsed != "Browser" and ClientAppUsed != "Mobile Apps and Desktop clients"
+| where ConditionalAccessPolicies != "[]"
+| where ResultType == 0
+| where AppDisplayName == "{app}"
+| where UserDisplayName == "{user}"
+| project TimeGenerated, CorrelationId
+```
+
+---
+
+## Section 2: Unprotected Applications
+
+### 2a. Apps with sign-ins lacking CA coverage (bar chart, untitled in the workbook)
+```kql
+SigninLogs
+| project AppDisplayName, ConditionalAccessStatus, Status, ResultType, UserDisplayName
+| where ResultType == 0 // sign-in was successful
+| where ConditionalAccessStatus == "notApplied"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| summarize Count = count() by AppDisplayName, UserDisplayName
+| summarize count() by AppDisplayName
+```
+
+### 2b. Select an application and user to learn more (drill-down source table)
+```kql
+SigninLogs
+| project AppDisplayName, UserDisplayName, ConditionalAccessStatus, Status, ResultType
+| where ResultType == 0 // sign-in was successful
+| where ConditionalAccessStatus == "notApplied"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| summarize Count = count() by UserDisplayName, AppDisplayName
+| order by Count
+```
+
+### 2c. {User} sign-ins to {App} without CA coverage (drill-down detail)
+```kql
+SigninLogs
+| project AppDisplayName, UserDisplayName, ConditionalAccessStatus, Status, ResultType, TimeGenerated, CorrelationId, OperatingSystem = tostring(DeviceDetail.operatingSystem)
+| where ResultType == 0 // sign-in was successful
+| where ConditionalAccessStatus == "notApplied"
+| where AppDisplayName == "{App}"
+| where UserDisplayName == "{User}"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| project TimeGenerated, CorrelationId, OperatingSystem
+```
+
+---
+
+## Section 3: Compromised / High-Risk User Sign-ins
+
+### 3a. Select a user for additional information (high-risk sign-ins with no CA, by user)
+```kql
+SigninLogs
+| project UserDisplayName, ConditionalAccessStatus, RiskLevelDuringSignIn, Status, ResultType
+| where ResultType == 0 // sign-in was successful
+| where RiskLevelDuringSignIn != "none" and RiskLevelDuringSignIn != "low" and RiskLevelDuringSignIn != "medium"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| summarize Count = count() by UserDisplayName, RiskLevelDuringSignIn
+| order by Count desc
+```
+
+### 3b. Risky sign-ins from {user} with no CA policies (drill-down detail)
+```kql
+SigninLogs
+| project TimeGenerated, ResultType, RiskLevelDuringSignIn, UserDisplayName, Status, DeviceDetail, LocationDetails, AppDisplayName, CorrelationId
+| where ResultType == 0 // sign-in was successful
+| where RiskLevelDuringSignIn != "none"
+| where UserDisplayName == "{user}"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not MFA
+| extend OperatingSystem = case(tostring(DeviceDetail.operatingSystem) == "", "Unknown", DeviceDetail.operatingSystem)
+| project TimeGenerated, AppDisplayName, CorrelationId, tostring(LocationDetails.countryOrRegion), OperatingSystem
+```
+
+---
+
+## Section 4: Unprotected Locations
+
+### 4a. Users with no CA coverage by location (map / heatmap, untitled in the workbook)
+```kql
+SigninLogs
+| project UserDisplayName, ConditionalAccessStatus, Status, ResultType, location = tostring(LocationDetails.countryOrRegion)
+| where ConditionalAccessStatus == "notApplied"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| where ResultType == 0
+| summarize count() by location, UserDisplayName
+| summarize Count = count() by location
+| order by Count desc
+```
+
+### 4b. Select a country/region to learn more (drill-down source table)
+```kql
+SigninLogs
+| project UserDisplayName, ConditionalAccessStatus, Status, ResultType, LocationDetails
+| where ResultType == 0 // sign-in was successful
+| where ConditionalAccessStatus == "notApplied"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| extend Location = case(tostring(LocationDetails.countryOrRegion) == "", "Unknown", LocationDetails.countryOrRegion)
+| summarize Count = count() by UserDisplayName, Location
+| project-away Count
+```
+
+### 4c. Additional Information — {country} sign-ins for {User} (drill-down detail)
+```kql
+SigninLogs
+| project LocationDetails, UserDisplayName, ConditionalAccessStatus, AppDisplayName, ResultType, TimeGenerated, CorrelationId
+| where ConditionalAccessStatus == "notApplied"
+| where ResultType == 0 // Sign-in was successful
+| extend country = case("{country}" == "Unknown", "", "{country}" != "Unknown", "{country}", "{country}")
+| where LocationDetails.countryOrRegion == country
+| where UserDisplayName == "{User}"
+| project TimeGenerated, CorrelationId, AppDisplayName
+```
+
+---
+
+## Section 5: Unprotected Named Locations (Preview)
+
+### 5a. Named locations without Conditional Access coverage
+```kql
+SigninLogs
+| project UserDisplayName, ConditionalAccessStatus, Status, ResultType, NetworkLocationDetails
+| where ConditionalAccessStatus == "notApplied"
+| where Status.additionalDetails != "MFA requirement satisfied by claim in the token" and Status.additionalDetails != "MFA requirement skipped due to remembered device" // Sign-in was not strong auth
+| where ResultType == 0
+| extend test = parse_json(NetworkLocationDetails)
+| mv-expand test
+| project test
+| extend ["Named Location"] = tostring(test["networkNames"])
+| summarize ["Sign-in Count"]=count() by ["Named Location"]
+```
+
+### 5b. Sign-ins from IPv6 addresses not assigned to a Named Location
+```kql
+SigninLogs
+| project ConditionalAccessStatus, UserPrincipalName, AppDisplayName, IPAddress, NetworkLocationDetails
+| where IPAddress has ":"
+| where NetworkLocationDetails has '[]'
+| summarize ["Sign-in Count"] = count() by IPAddress, NetworkLocationDetails
+| sort by ["Sign-in Count"] desc
+| project-away NetworkLocationDetails
+```
+
+### 5c. Sign-ins from IPv6 addresses not assigned to a Named Location, by application
+```kql
+SigninLogs
+| project ConditionalAccessStatus, UserPrincipalName, AppDisplayName, IPAddress, NetworkLocationDetails
+| where IPAddress has ":"
+| where NetworkLocationDetails has '[]'
+| summarize ["Sign-in Count"] = count() by AppDisplayName, IPAddress
+| sort by ["Sign-in Count"] desc
+```
