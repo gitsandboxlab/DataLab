@@ -1,119 +1,88 @@
-WITH Src AS (
-    SELECT * FROM dbo.vw_ConditionalAccessPolicies
-)
+import json
+import requests
+import pandas as pd
+import xml.etree.ElementTree as ET
 
--- ===================== SECTION 1: Assigned to =====================
-SELECT PolicyGuid, DisplayName, State, 1 AS SectionSortOrder, 'Assigned to' AS Section,
-       1 AS FieldSortOrder, 'Include users' AS FieldName, TRIM(value) AS FieldValue
-FROM Src CROSS APPLY STRING_SPLIT(IncludeUsers, ',') WHERE IncludeUsers IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 2, 'Exclude users', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeUsers, ',') WHERE ExcludeUsers IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 3, 'Include groups', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeGroups, ',') WHERE IncludeGroups IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 4, 'Exclude groups', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeGroups, ',') WHERE ExcludeGroups IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 5, 'Include roles', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeRoles, ',') WHERE IncludeRoles IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 6, 'Exclude roles', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeRoles, ',') WHERE ExcludeRoles IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 7, 'Include guest/external types', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeGuestTypes, ',') WHERE IncludeGuestTypes IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 1, 'Assigned to', 8, 'Exclude guest/external types', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeGuestTypes, ',') WHERE ExcludeGuestTypes IS NOT NULL
 
--- ===================== SECTION 2: Target resources =====================
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 2, 'Target resources', 1, 'Include apps', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeApplications, ',') WHERE IncludeApplications IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 2, 'Target resources', 2, 'Exclude apps', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeApplications, ',') WHERE ExcludeApplications IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 2, 'Target resources', 3, 'User actions', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeUserActions, ',') WHERE IncludeUserActions IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 2, 'Target resources', 4, 'Auth context', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeAuthContexts, ',') WHERE IncludeAuthContexts IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 2, 'Target resources', 5, 'Application filter rule', ApplicationFilterRule
-FROM Src WHERE ApplicationFilterRule IS NOT NULL
+def _xml_to_dict(elem):
+    """Recursively flatten an XML element into dict/list (repeated tags become lists)."""
+    children = list(elem)
+    if not children:
+        text = elem.text.strip() if elem.text else None
+        return {"@attrib": elem.attrib, "text": text} if elem.attrib else text
 
--- ===================== SECTION 3: Conditions =====================
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 1, 'Client app types', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ClientAppTypes, ',') WHERE ClientAppTypes IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 2, 'Include platforms', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludePlatforms, ',') WHERE IncludePlatforms IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 3, 'Exclude platforms', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludePlatforms, ',') WHERE ExcludePlatforms IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 4, 'Include locations', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(IncludeLocations, ',') WHERE IncludeLocations IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 5, 'Exclude locations', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ExcludeLocations, ',') WHERE ExcludeLocations IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 6, 'Sign-in risk levels', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(SignInRiskLevels, ',') WHERE SignInRiskLevels IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 7, 'User risk levels', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(UserRiskLevels, ',') WHERE UserRiskLevels IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 8, 'Service principal risk levels', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(ServicePrincipalRiskLevels, ',') WHERE ServicePrincipalRiskLevels IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 9, 'Insider risk level', InsiderRiskLevel
-FROM Src WHERE InsiderRiskLevel IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 3, 'Conditions', 10, 'Device filter rule', DeviceFilterRule
-FROM Src WHERE DeviceFilterRule IS NOT NULL
+    result = {}
+    for child in children:
+        data = _xml_to_dict(child)
+        if child.tag in result:
+            if not isinstance(result[child.tag], list):
+                result[child.tag] = [result[child.tag]]
+            result[child.tag].append(data)
+        else:
+            result[child.tag] = data
+    if elem.attrib:
+        result["@attrib"] = elem.attrib
+    return result
 
--- ===================== SECTION 4: Grant controls =====================
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 4, 'Grant controls', 1, 'Operator', GrantOperator
-FROM Src WHERE GrantOperator IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 4, 'Grant controls', 2, 'Built-in controls', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(BuiltInControls, ',') WHERE BuiltInControls IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 4, 'Grant controls', 3, 'Custom auth factors', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(CustomAuthFactors, ',') WHERE CustomAuthFactors IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 4, 'Grant controls', 4, 'Terms of use', TRIM(value)
-FROM Src CROSS APPLY STRING_SPLIT(TermsOfUse, ',') WHERE TermsOfUse IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 4, 'Grant controls', 5, 'Authentication strength', AuthenticationStrengthName
-FROM Src WHERE AuthenticationStrengthName IS NOT NULL
 
--- ===================== SECTION 5: Session controls =====================
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 1, 'Sign-in frequency',
-       CONCAT('every ', SignInFrequencyValue, ' ', SignInFrequencyType, ' (', SignInFrequencyAuthType, ')')
-FROM Src WHERE SignInFrequencyEnabled = 'true'
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 2, 'Persistent browser', PersistentBrowserMode
-FROM Src WHERE PersistentBrowserEnabled = 'true'
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 3, 'Cloud app security', CloudAppSecurityType
-FROM Src WHERE CloudAppSecurityEnabled = 'true'
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 4, 'App-enforced restrictions', 'Enabled'
-FROM Src WHERE AppEnforcedRestrictionsEnabled = 'true'
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 5, 'Continuous access evaluation', ContinuousAccessEvalMode
-FROM Src WHERE ContinuousAccessEvalMode IS NOT NULL
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 6, 'Secure sign-in session', 'Enabled'
-FROM Src WHERE SecureSignInSessionEnabled = 'true'
-UNION ALL
-SELECT PolicyGuid, DisplayName, State, 5, 'Session controls', 7, 'Resilience defaults disabled', 'true'
-FROM Src WHERE DisableResilienceDefaults = 'true';
+def _json_or_none(elem, tag):
+    node = elem.find(tag)
+    return json.dumps(_xml_to_dict(node)) if node is not None else None
+
+
+def fetch_qualys_kb(username, password, platform_url="https://qualysapi.qualys.com", truncation_limit=1000):
+    """Fetch all Qualys KnowledgeBase (QID) records via API 4.0, return as DataFrame."""
+    url = f"{platform_url}/api/4.0/fo/knowledge_base/vuln/"
+    headers = {"X-Requested-With": "python-requests"}
+    params = {"action": "list", "details": "All", "truncation_limit": truncation_limit}
+    auth = (username, password)
+
+    records = []
+    id_min = None
+
+    while True:
+        if id_min:
+            params["id_min"] = id_min
+
+        resp = requests.get(url, headers=headers, params=params, auth=auth)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        vulns = root.findall(".//VULN")
+        if not vulns:
+            break
+
+        for v in vulns:
+            records.append({
+                "QID": v.findtext("QID"),
+                "VULN_TYPE": v.findtext("VULN_TYPE"),
+                "SEVERITY_LEVEL": v.findtext("SEVERITY_LEVEL"),
+                "TITLE": v.findtext("TITLE"),
+                "CATEGORY": v.findtext("CATEGORY"),
+                "PATCHABLE": v.findtext("PATCHABLE"),
+                "PUBLISHED_DATETIME": v.findtext("PUBLISHED_DATETIME"),
+                "LAST_SERVICE_MODIFICATION_DATETIME": v.findtext("LAST_SERVICE_MODIFICATION_DATETIME"),
+                "CODE_MODIFIED_DATETIME": v.findtext("CODE_MODIFIED_DATETIME"),
+                "PATCH_PUBLISHED_DATE": v.findtext("PATCH_PUBLISHED_DATE"),
+                "TECHNOLOGY": v.findtext("TECHNOLOGY"),
+                "DIAGNOSIS": v.findtext("DIAGNOSIS"),
+                "CONSEQUENCE": v.findtext("CONSEQUENCE"),
+                "SOLUTION": v.findtext("SOLUTION"),
+                "CVSS_BASE": v.findtext("CVSS/BASE"),
+                "CVSS3_BASE": v.findtext("CVSS_V3/BASE"),
+                "SOFTWARE_LIST": _json_or_none(v, "SOFTWARE_LIST"),
+                "VENDOR_REFERENCE_LIST": _json_or_none(v, "VENDOR_REFERENCE_LIST"),
+                "CVE_LIST": _json_or_none(v, "CVE_LIST"),
+                "BUGTRAQ_LIST": _json_or_none(v, "BUGTRAQ_LIST"),
+                "COMPLIANCE_LIST": _json_or_none(v, "COMPLIANCE_LIST"),
+                "THREAT_INTELLIGENCE": _json_or_none(v, "THREAT_INTELLIGENCE"),
+                "CORRELATION": _json_or_none(v, "CORRELATION"),
+            })
+
+        warning = root.find(".//WARNING/URL")
+        if warning is not None and "id_min=" in warning.text:
+            id_min = warning.text.split("id_min=")[1].split("&")[0]
+        else:
+            break
+
+    return pd.DataFrame(records)
