@@ -1,1 +1,9 @@
-GET https://graph.microsoft.com/v1.0/servicePrincipals?$filter=preferredSingleSignOnMode eq 'saml'&$select=appId,appDisplayName,preferredSingleSignOnMode,loginUrl
+CREATE TABLE dbo.AssessmentMetadata (
+    Id INT IDENTITY(1,1) PRIMARY KEY,
+    RawJson NVARCHAR(MAX)
+);
+
+INSERT INTO dbo.AssessmentMetadata (RawJson)
+SELECT meta.value
+FROM dbo.YourRawTable t
+CROSS APPLY OPENJSON(t.RawJson, '$.value') AS meta;
